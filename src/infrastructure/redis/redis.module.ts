@@ -24,8 +24,10 @@ import { REDIS_CLIENT } from './redis.constants';
  * The `error` listener is not optional: an ioredis client with no listener
  * turns a connection blip into an unhandled `error` event.
  *
- * Provisioned and health-checked here; the throttling and usage-limit changes
- * are what will actually consume it.
+ * Consumers on this client: Better Auth secondary storage (sessions + auth
+ * rate limits), permission-cache version stamps, Nest request throttling, and
+ * daily/weekly usage counters. Session cache fails open (Postgres fallback);
+ * throttle and usage checks fail closed.
  */
 @Global()
 @Module({

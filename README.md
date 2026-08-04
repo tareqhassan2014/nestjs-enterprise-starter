@@ -19,12 +19,14 @@ Fork it and build features on top — the parts every service needs are decided 
 | Two-factor | TOTP enrolment with encrypted single-use backup codes |
 | Authorization | Deny-by-default guards, roles and assignments in the database over a code-declared permission catalogue |
 | Abuse resistance | Per-address auth rate limits on Redis, plus self-healing per-account lockout |
+| Request throttling | Redis-backed Nest burst + per-minute limits; stricter on account Nest routes |
+| Usage limits | Daily/weekly Redis counters per user (and optional org) + feature |
 | Transport security | Helmet with an API-appropriate CSP, CORS allowlist, hardened session cookies |
 | Mail | Provider-agnostic port with a recording dev adapter and an SMTP adapter |
 | Local stack | Docker Compose: app + Postgres + Redis + Mailpit, with healthchecks |
 | CI | GitHub Actions: lint, typecheck, unit, integration, build, boot smoke test, image build |
 
-Not included by design: billing, plans, entitlements, credits, application-wide throttling, and admin APIs. Those are separate changes that build on this foundation.
+Not included by design: billing, plans, entitlements, credits, and admin APIs. Those are separate changes that build on this foundation.
 
 ## Requirements
 
@@ -311,12 +313,15 @@ Effective permission sets are cached in Redis and invalidated by **advancing a v
 ### The guard chain
 
 ```
-AuthGuard          → establishes the principal, or 401
-PermissionsGuard   → decides whether that principal may proceed, or 403
-[reserved]           plan entitlements → throttling/usage limits → credit checks
+AuthGuard            → establishes the principal, or 401
+PermissionsGuard     → decides whether that principal may proceed, or 403
+[reserved]             plan entitlements
+AppThrottlerGuard    → Nest burst / per-minute (Redis), or 429 RATE_LIMITED
+UsageLimitsGuard     → optional @UsageLimit, or 429 USAGE_LIMIT_EXCEEDED
+[reserved]             credit checks
 ```
 
-Order is the contract, and it is registered in `AuthorizationModule`. Later stages append **after** authorization and must consume the principal `AuthGuard` already resolved rather than re-resolving the session.
+Order is the contract. Auth and Permissions register in `AuthorizationModule`; throttling and usage register in modules imported after it in `AppModule`. Later stages append **after** authorization and must consume the principal `AuthGuard` already resolved rather than re-resolving the session.
 
 A `403` says only that you were refused. It never enumerates which permissions were required or missing — that would describe the policy to an attacker. The full reason is logged with the request id and the user id.
 
@@ -335,15 +340,21 @@ Recovery: `GET /api/v1/account/two-factor` reports how many codes remain, so a u
 
 ## Abuse resistance
 
-Two mechanisms, because they solve different problems.
+Three layers, because they solve different problems.
 
-**Per-address rate limits** on the whole auth surface, tighter on sign-in, sign-up, reset, and 2FA verification. Counters live in Redis, so limits hold across instances. Boot fails if the credential paths are not configured strictly than the general surface, so the guarantee survives edited values.
+**Per-address rate limits on `/api/auth/*`** (Better Auth’s Redis limiter), tighter on sign-in, sign-up, reset, and 2FA verification. Counters live in Redis, so limits hold across instances. Boot fails if the credential paths are not configured strictly than the general auth surface, so the guarantee survives edited values.
+
+**Nest burst + per-minute throttling on application routes** (`@nestjs/throttler` on the shared Redis client). Named windows (`burst`, `minute`) apply globally per tracker: authenticated callers key by `user:{id}`, anonymous by IP. First-party account / session / 2FA controllers under `/api/v1` use a stricter policy; `/health/*` skips throttling. This limiter does **not** wrap `/api/auth/*` — that surface stays on Better Auth’s rules. Exhaustion returns enveloped `429` with `RATE_LIMITED` and `Retry-After`. Redis failures fail closed as `503 SERVICE_UNAVAILABLE`.
+
+**Daily / weekly usage counters** for declared features (`UsageLimitsService`, optional `@UsageLimit`). Keys are per user (and optionally per org when multi-tenancy exists). Periods are UTC calendar day and ISO week. Exhaustion returns `429` with `USAGE_LIMIT_EXCEEDED` (distinct from burst throttling) plus `Retry-After` until the period resets. Prefer `consume()` after successful billable work when only successes should burn quota.
 
 **Per-account lockout**, because an address-keyed limiter does nothing about a thousand hosts each making four guesses at one password. After a threshold, retry delay grows exponentially to a cap, and the window **expires on its own** — no sticky lock, and no administrative unlock step. That is intentional: a permanent lock would hand an attacker the ability to deny a real user their own account.
 
-Counters are consumed for addresses that are not registered, and keys hold a hash of the normalised address rather than the address itself, so the limiter can neither be used to enumerate accounts nor leave inboxes lying in the Redis keyspace.
+Counters for auth lockout are consumed for addresses that are not registered, and keys hold a hash of the normalised address rather than the address itself, so the limiter can neither be used to enumerate accounts nor leave inboxes lying in the Redis keyspace.
 
 `TRUST_PROXY` is off by default. Turn it on only when the service genuinely sits behind a proxy you control — otherwise any client can forge `X-Forwarded-For` and choose its own rate-limit identity.
+
+Throttle / usage knobs live in `.env.example` (`THROTTLE_*`, `USAGE_LIMIT_*`). `.env.test` uses deliberately generous Nest ceilings so suites that are not about throttling are not blocked; `test/request-throttling.e2e-spec.ts` and `test/usage-limits.e2e-spec.ts` boot with tight overrides and isolated Redis DB indexes.
 
 ## Mail
 

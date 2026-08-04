@@ -14,6 +14,11 @@ export const ErrorCode = {
   NOT_FOUND: 'NOT_FOUND',
   CONFLICT: 'CONFLICT',
   RATE_LIMITED: 'RATE_LIMITED',
+  /**
+   * Daily/weekly quota exhausted — distinct from `RATE_LIMITED` (burst/minute).
+   * Clients wait for the period reset or upgrade; they do not retry in seconds.
+   */
+  USAGE_LIMIT_EXCEEDED: 'USAGE_LIMIT_EXCEEDED',
   SERVICE_UNAVAILABLE: 'SERVICE_UNAVAILABLE',
   INTERNAL_ERROR: 'INTERNAL_ERROR',
 

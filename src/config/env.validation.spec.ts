@@ -321,6 +321,27 @@ describe('validateEnv', () => {
 
       expect(env.AUTH_STRICT_RATE_LIMIT_MAX).toBe(10);
       expect(env.AUTH_RATE_LIMIT_MAX).toBe(60);
+      expect(env.THROTTLE_BURST_MAX).toBe(20);
+      expect(env.THROTTLE_MINUTE_MAX).toBe(120);
+      expect(env.USAGE_LIMIT_DEFAULT_DAILY).toBe(1000);
+    });
+
+    it('rejects a non-positive Nest throttle maximum', () => {
+      expect(() =>
+        validateEnv({ ...validEnv, THROTTLE_BURST_MAX: '0' }),
+      ).toThrow(/THROTTLE_BURST_MAX/);
+    });
+
+    it('requires Nest strict burst to be tighter than the default', () => {
+      expect(() =>
+        validateEnv({
+          ...validEnv,
+          THROTTLE_BURST_MAX: '10',
+          THROTTLE_BURST_WINDOW_SECONDS: '10',
+          THROTTLE_STRICT_BURST_MAX: '20',
+          THROTTLE_STRICT_BURST_WINDOW_SECONDS: '10',
+        }),
+      ).toThrow(/THROTTLE_STRICT_BURST_MAX/);
     });
 
     it('rejects a base lockout delay above the cap', () => {

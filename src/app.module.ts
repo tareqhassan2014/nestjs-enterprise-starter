@@ -18,6 +18,8 @@ import {
   mailConfig,
   redisConfig,
   securityConfig,
+  throttleConfig,
+  usageLimitsConfig,
   validateEnv,
 } from '@config/index';
 import { HealthModule } from '@infrastructure/health/health.module';
@@ -28,6 +30,8 @@ import { RedisModule } from '@infrastructure/redis/redis.module';
 import { AuthModule } from '@modules/auth/auth.module';
 import { BetterAuthMiddleware } from '@modules/auth/better-auth.middleware';
 import { AuthorizationModule } from '@modules/authorization/authorization.module';
+import { ThrottlingModule } from '@modules/throttling/throttling.module';
+import { UsageLimitsModule } from '@modules/usage-limits/usage-limits.module';
 
 import { API_PREFIX } from './bootstrap';
 
@@ -62,6 +66,8 @@ const AUTH_ROUTE_PATTERN = `${AUTH_BASE_PATH.replace(
         authConfig,
         securityConfig,
         mailConfig,
+        throttleConfig,
+        usageLimitsConfig,
       ],
     }),
     LoggerModule,
@@ -70,6 +76,8 @@ const AUTH_ROUTE_PATTERN = `${AUTH_BASE_PATH.replace(
     MailModule,
     AuthModule,
     AuthorizationModule,
+    ThrottlingModule,
+    UsageLimitsModule,
     HealthModule,
     CommonModule,
   ],

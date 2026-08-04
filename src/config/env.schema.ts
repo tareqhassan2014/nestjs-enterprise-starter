@@ -236,6 +236,41 @@ const envObjectSchema = z.object({
   AUTH_LOCKOUT_WINDOW_SECONDS: z.coerce.number().int().positive().default(3600),
 
   // ---------------------------------------------------------------------------
+  // Nest request throttling (burst + per-minute; stricter on account routes)
+  // ---------------------------------------------------------------------------
+
+  THROTTLE_BURST_WINDOW_SECONDS: z.coerce.number().int().positive().default(10),
+  THROTTLE_BURST_MAX: z.coerce.number().int().positive().default(20),
+  THROTTLE_MINUTE_WINDOW_SECONDS: z.coerce
+    .number()
+    .int()
+    .positive()
+    .default(60),
+  THROTTLE_MINUTE_MAX: z.coerce.number().int().positive().default(120),
+
+  THROTTLE_STRICT_BURST_WINDOW_SECONDS: z.coerce
+    .number()
+    .int()
+    .positive()
+    .default(10),
+  THROTTLE_STRICT_BURST_MAX: z.coerce.number().int().positive().default(10),
+  THROTTLE_STRICT_MINUTE_WINDOW_SECONDS: z.coerce
+    .number()
+    .int()
+    .positive()
+    .default(60),
+  THROTTLE_STRICT_MINUTE_MAX: z.coerce.number().int().positive().default(30),
+
+  // ---------------------------------------------------------------------------
+  // Daily / weekly usage ceilings (UTC calendar periods)
+  // ---------------------------------------------------------------------------
+
+  USAGE_LIMIT_DEFAULT_DAILY: z.coerce.number().int().positive().default(1_000),
+  USAGE_LIMIT_DEFAULT_WEEKLY: z.coerce.number().int().positive().default(5_000),
+  USAGE_LIMIT_DEMO_DAILY: z.coerce.number().int().positive().default(100),
+  USAGE_LIMIT_DEMO_WEEKLY: z.coerce.number().int().positive().default(500),
+
+  // ---------------------------------------------------------------------------
   // Transport security
   // ---------------------------------------------------------------------------
 
@@ -378,6 +413,33 @@ export const envSchema = envObjectSchema.superRefine((env, ctx) => {
       code: 'custom',
       path: ['AUTH_STRICT_RATE_LIMIT_MAX'],
       message: `must permit a lower rate than the general auth limit (currently ${strictRate.toFixed(3)}/s strict vs ${generalRate.toFixed(3)}/s general) — credential endpoints are meant to be the tighter ones`,
+    });
+  }
+
+  // Nest account routes must be stricter than the default Nest ceilings.
+  const nestBurstRate =
+    env.THROTTLE_BURST_MAX / env.THROTTLE_BURST_WINDOW_SECONDS;
+  const nestStrictBurstRate =
+    env.THROTTLE_STRICT_BURST_MAX / env.THROTTLE_STRICT_BURST_WINDOW_SECONDS;
+
+  if (nestStrictBurstRate >= nestBurstRate) {
+    ctx.addIssue({
+      code: 'custom',
+      path: ['THROTTLE_STRICT_BURST_MAX'],
+      message: `must permit a lower rate than the default burst limit (currently ${nestStrictBurstRate.toFixed(3)}/s strict vs ${nestBurstRate.toFixed(3)}/s default)`,
+    });
+  }
+
+  const nestMinuteRate =
+    env.THROTTLE_MINUTE_MAX / env.THROTTLE_MINUTE_WINDOW_SECONDS;
+  const nestStrictMinuteRate =
+    env.THROTTLE_STRICT_MINUTE_MAX / env.THROTTLE_STRICT_MINUTE_WINDOW_SECONDS;
+
+  if (nestStrictMinuteRate >= nestMinuteRate) {
+    ctx.addIssue({
+      code: 'custom',
+      path: ['THROTTLE_STRICT_MINUTE_MAX'],
+      message: `must permit a lower rate than the default per-minute limit (currently ${nestStrictMinuteRate.toFixed(3)}/s strict vs ${nestMinuteRate.toFixed(3)}/s default)`,
     });
   }
 });

@@ -2,6 +2,8 @@ import { Body, Controller, Get, Inject, Post, Req, Res } from '@nestjs/common';
 import { fromNodeHeaders } from 'better-auth/node';
 import type { Request, Response } from 'express';
 
+import { StrictThrottle } from '@modules/throttling/throttle.decorators';
+
 import { CurrentUser } from './auth.decorators';
 import type { AuthInstance } from './auth.factory';
 import type { AuthenticatedPrincipal } from './auth.service';
@@ -22,6 +24,7 @@ interface TwoFactorStatus {
  * standard envelope. Enrolment and verification themselves delegate to the
  * plugin — the cryptography is not ours to reimplement.
  */
+@StrictThrottle()
 @Controller({ path: 'account/two-factor', version: '1' })
 export class TwoFactorController {
   constructor(@Inject(AUTH_INSTANCE) private readonly auth: AuthInstance) {}

@@ -6,6 +6,7 @@ import {
   HealthCheckService,
   PrismaHealthIndicator,
 } from '@nestjs/terminus';
+import { SkipThrottle } from '@nestjs/throttler';
 
 import { NoEnvelope } from '@common/decorators/no-envelope.decorator';
 import { redisConfig } from '@config/redis.config';
@@ -22,8 +23,12 @@ import { RedisHealthIndicator } from './redis.health';
  * `@Public()` is not optional here. Routes are authenticated by default, and an
  * orchestrator presents no credentials — without this, readiness would fail
  * closed and the orchestrator would kill a perfectly healthy instance.
+ *
+ * `@SkipThrottle()` keeps probes off the Nest rate limiter so an orchestrator
+ * cannot trip burst/minute ceilings while checking health.
  */
 @Public()
+@SkipThrottle({ burst: true, minute: true })
 @Controller({ path: 'health', version: VERSION_NEUTRAL })
 export class HealthController {
   constructor(

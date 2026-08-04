@@ -12,6 +12,7 @@ import { fromNodeHeaders } from 'better-auth/node';
 import type { Request, Response } from 'express';
 
 import { PermissionResolver } from '@modules/authorization/permission-resolver.service';
+import { StrictThrottle } from '@modules/throttling/throttle.decorators';
 
 import { CurrentUser } from './auth.decorators';
 import type { AuthInstance } from './auth.factory';
@@ -44,7 +45,11 @@ interface SessionView {
  * the library-owned surface at `/api/auth/*`. Scoped to the *current* user
  * throughout: managing somebody else's roles or sessions belongs to the
  * admin-monitoring change, which has an HTTP surface to design for it.
+ *
+ * `@StrictThrottle()` applies the tighter Nest ceilings — credential POSTs on
+ * `/api/auth/*` remain Better Auth's responsibility.
  */
+@StrictThrottle()
 @Controller({ path: 'account', version: '1' })
 export class AccountController {
   constructor(

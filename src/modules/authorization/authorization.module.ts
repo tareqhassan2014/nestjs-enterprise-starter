@@ -16,14 +16,16 @@ import { PermissionsGuard } from './permissions.guard';
  *                            the request and the request context.
  *   2. `PermissionsGuard`  — decides whether that principal may proceed.
  *   3. reserved: plan entitlements
- *   4. reserved: throttling and usage limits
- *   5. reserved: credit checks
+ *   4. `AppThrottlerGuard` — Nest burst/per-minute (registered in ThrottlingModule)
+ *   5. `UsageLimitsGuard`  — optional `@UsageLimit` (registered in UsageLimitsModule)
+ *   6. reserved: credit checks
  *
- * Stages 3–5 belong to later changes. Each must be appended here, after
- * authorization, and must **consume the principal `AuthGuard` already resolved**
- * rather than resolving the session again — one resolution per request is what
- * keeps the cost of the chain flat as it grows, and what keeps a single request
- * from observing two different principals.
+ * Stages 4–5 live in modules imported **after** this one in `AppModule`, so Nest
+ * appends their `APP_GUARD` providers after Auth and Permissions. Each stage must
+ * **consume the principal `AuthGuard` already resolved** rather than resolving
+ * the session again — one resolution per request is what keeps the cost of the
+ * chain flat as it grows, and what keeps a single request from observing two
+ * different principals.
  *
  * Registered as providers rather than via `app.useGlobalGuards()` so that any app
  * built through `Test.createTestingModule` gets the same posture as the server.

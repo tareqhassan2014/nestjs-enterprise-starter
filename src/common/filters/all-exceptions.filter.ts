@@ -110,6 +110,12 @@ export class AllExceptionsFilter implements ExceptionFilter {
       );
     }
 
+    if (exception instanceof ApiException && exception.headers) {
+      for (const [name, value] of Object.entries(exception.headers)) {
+        response.setHeader(name, value);
+      }
+    }
+
     const body: ErrorEnvelope = {
       success: false,
       error: {
