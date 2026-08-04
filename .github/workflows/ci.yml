@@ -1,0 +1,93 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    name: Lint, typecheck, test, build
+    runs-on: ubuntu-latest
+
+    # Integration and e2e tests run against real engines, not mocks.
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: nestjs_enterprise_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      NODE_ENV: test
+      DATABASE_URL: postgresql://postgres:postgres@localhost:5432/nestjs_enterprise_test?schema=public
+      REDIS_URL: redis://localhost:6379
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      # --frozen-lockfile: a lockfile drift is a failure, not a silent resolve.
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Generate Prisma client
+        run: pnpm db:generate
+
+      # Cheapest gates first — most failures are caught before the slow steps.
+      - name: Check .env.example is in sync with the schema
+        run: pnpm check:env
+
+      - name: Lint
+        run: pnpm lint:ci
+
+      - name: Typecheck
+        run: pnpm typecheck
+
+      - name: Unit tests
+        run: pnpm test
+
+      - name: Apply migrations
+        run: pnpm db:migrate:deploy
+
+      - name: End-to-end and integration tests
+        run: pnpm test:e2e
+
+      - name: Build
+        run: pnpm build
+
+      # Guards against path-alias drift between tsconfig.json and .swcrc, which
+      # passes every gate above and fails only when the built output runs.
+      - name: Boot smoke test
+        run: pnpm test:smoke
+
+      - name: Build production image
+        run: docker build --target runner -t nestjs-enterprise-starter:ci .

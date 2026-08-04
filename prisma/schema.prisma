@@ -1,0 +1,35 @@
+// Prisma 7. Written by hand rather than via `prisma init`, which also
+// scaffolds agent-skill directories into the repo root.
+//
+// The client is generated into src/ so `nest build` compiles it into dist/ —
+// output anywhere else would be missing at runtime. See design.md decision 8.
+
+generator client {
+  provider            = "prisma-client"
+  output              = "../src/generated/prisma"
+  moduleFormat        = "cjs"
+  runtime             = "nodejs"
+  importFileExtension = ""
+}
+
+// The connection string is supplied by prisma.config.ts for CLI commands, and
+// by the validated `database` config namespace at runtime — never read from
+// process.env by Prisma itself.
+datasource db {
+  provider = "postgresql"
+}
+
+/// Runtime settings and feature flags.
+///
+/// The one baseline model: it gives the seed hook something idempotent and real
+/// to do, and gives persistence tests a genuine write/read round trip. It is
+/// deliberately not a placeholder `User` — Better Auth generates its own
+/// User/Session/Account models, and a stand-in here would guarantee a
+/// conflicting migration later.
+model AppSetting {
+  key       String   @id
+  value     Json
+  updatedAt DateTime @updatedAt
+
+  @@map("app_settings")
+}

@@ -1,98 +1,229 @@
-<p align="center">
-  <a href="http://nestjs.com/" target="blank"><img src="https://nestjs.com/img/logo-small.svg" width="120" alt="Nest Logo" /></a>
-</p>
+# NestJS Enterprise Starter
 
-[circleci-image]: https://img.shields.io/circleci/build/github/nestjs/nest/master?token=abc123def456
-[circleci-url]: https://circleci.com/gh/nestjs/nest
+An opinionated NestJS 11 starter with the cross-cutting substrate already built: validated configuration, a uniform API contract, structured logging with request correlation, health checks, Prisma + PostgreSQL, Redis, Docker, and CI.
 
-  <p align="center">A progressive <a href="http://nodejs.org" target="_blank">Node.js</a> framework for building efficient and scalable server-side applications.</p>
-    <p align="center">
-<a href="https://www.npmjs.com/~nestjscore" target="_blank"><img src="https://img.shields.io/npm/v/@nestjs/core.svg" alt="NPM Version" /></a>
-<a href="https://www.npmjs.com/~nestjscore" target="_blank"><img src="https://img.shields.io/npm/l/@nestjs/core.svg" alt="Package License" /></a>
-<a href="https://www.npmjs.com/~nestjscore" target="_blank"><img src="https://img.shields.io/npm/dm/@nestjs/common.svg" alt="NPM Downloads" /></a>
-<a href="https://circleci.com/gh/nestjs/nest" target="_blank"><img src="https://img.shields.io/circleci/build/github/nestjs/nest/master" alt="CircleCI" /></a>
-<a href="https://discord.gg/G7Qnnhy" target="_blank"><img src="https://img.shields.io/badge/discord-online-brightgreen.svg" alt="Discord"/></a>
-<a href="https://opencollective.com/nest#backer" target="_blank"><img src="https://opencollective.com/nest/backers/badge.svg" alt="Backers on Open Collective" /></a>
-<a href="https://opencollective.com/nest#sponsor" target="_blank"><img src="https://opencollective.com/nest/sponsors/badge.svg" alt="Sponsors on Open Collective" /></a>
-  <a href="https://paypal.me/kamilmysliwiec" target="_blank"><img src="https://img.shields.io/badge/Donate-PayPal-ff3f59.svg" alt="Donate us"/></a>
-    <a href="https://opencollective.com/nest#sponsor"  target="_blank"><img src="https://img.shields.io/badge/Support%20us-Open%20Collective-41B883.svg" alt="Support us"></a>
-  <a href="https://twitter.com/nestframework" target="_blank"><img src="https://img.shields.io/twitter/follow/nestframework.svg?style=social&label=Follow" alt="Follow us on Twitter"></a>
-</p>
-  <!--[![Backers on Open Collective](https://opencollective.com/nest/backers/badge.svg)](https://opencollective.com/nest#backer)
-  [![Sponsors on Open Collective](https://opencollective.com/nest/sponsors/badge.svg)](https://opencollective.com/nest#sponsor)-->
+Fork it and build features on top — the parts every service needs are decided and wired.
 
-## Description
+## What's in the box
 
-[Nest](https://github.com/nestjs/nest) framework TypeScript starter repository.
+| Concern | Implementation |
+| --- | --- |
+| Configuration | Zod schema validated at boot, typed namespaces, `process.env` banned outside `src/config/` by lint |
+| API contract | `/api/v1` prefix with URI versioning, uniform success/error envelope, stable error codes |
+| Validation | Global `ValidationPipe` — unknown properties rejected, payloads coerced, field-level errors |
+| Correlation | `x-request-id` per request via `AsyncLocalStorage`, in every response and log line |
+| Logging | Pino — JSON in production, pretty in development, sensitive fields redacted |
+| Health | `/health/live` (no dependencies) and `/health/ready` (Postgres + Redis) |
+| Persistence | Prisma 7 with the pg driver adapter, versioned migrations, idempotent seed |
+| Local stack | Docker Compose: app + Postgres + Redis, with healthchecks |
+| CI | GitHub Actions: lint, typecheck, unit, integration, build, boot smoke test, image build |
 
-## Project setup
+Not included by design: authentication, RBAC, billing, plans, credits, and throttling. Those are separate changes that build on this foundation.
 
-```bash
-$ pnpm install
-```
+## Requirements
 
-## Compile and run the project
+- Node.js 22+
+- pnpm 11+ (`corepack enable`)
+- Docker (for Postgres and Redis)
+
+## Quick start
 
 ```bash
-# development
-$ pnpm run start
-
-# watch mode
-$ pnpm run start:dev
-
-# production mode
-$ pnpm run start:prod
+cp .env.example .env
+pnpm install
+pnpm docker:up          # app + Postgres + Redis
 ```
 
-## Run tests
+Then:
 
 ```bash
-# unit tests
-$ pnpm run test
-
-# e2e tests
-$ pnpm run test:e2e
-
-# test coverage
-$ pnpm run test:cov
+curl http://localhost:3000/health/ready
 ```
 
-## Deployment
-
-When you're ready to deploy your NestJS application to production, there are some key steps you can take to ensure it runs as efficiently as possible. Check out the [deployment documentation](https://docs.nestjs.com/deployment) for more information.
-
-If you are looking for a cloud-based platform to deploy your NestJS application, check out [Mau](https://mau.nestjs.com), our official platform for deploying NestJS applications on AWS. Mau makes deployment straightforward and fast, requiring just a few simple steps:
+If port 5432, 6379, or 3000 is already taken on your machine, set the host port in `.env` — only the host side moves, since the app reaches `postgres:5432` on the Compose network regardless:
 
 ```bash
-$ pnpm install -g @nestjs/mau
-$ mau deploy
+POSTGRES_HOST_PORT=5433
+REDIS_HOST_PORT=6380
+APP_HOST_PORT=3001
 ```
 
-With Mau, you can deploy your application in just a few clicks, allowing you to focus on building features rather than managing infrastructure.
+These are read by Docker Compose, not by the application, so they are deliberately absent from `.env.example` and the env schema.
 
-## Resources
+### Running the app outside Docker
 
-Check out a few resources that may come in handy when working with NestJS:
+```bash
+cp .env.example .env
+pnpm install
+pnpm docker:up postgres redis   # data services only
+pnpm db:generate
+pnpm db:migrate
+pnpm start:dev
+```
 
-- Visit the [NestJS Documentation](https://docs.nestjs.com) to learn more about the framework.
-- For questions and support, please visit our [Discord channel](https://discord.gg/G7Qnnhy).
-- To dive deeper and get more hands-on experience, check out our official video [courses](https://courses.nestjs.com/).
-- Deploy your application to AWS with the help of [NestJS Mau](https://mau.nestjs.com) in just a few clicks.
-- Visualize your application graph and interact with the NestJS application in real-time using [NestJS Devtools](https://devtools.nestjs.com).
-- Need help with your project (part-time to full-time)? Check out our official [enterprise support](https://enterprise.nestjs.com).
-- To stay in the loop and get updates, follow us on [X](https://x.com/nestframework) and [LinkedIn](https://linkedin.com/company/nestjs).
-- Looking for a job, or have a job to offer? Check out our official [Jobs board](https://jobs.nestjs.com).
+`prisma generate` is required before the first typecheck or build: the client is generated into `src/generated/` (gitignored), and the build compiles it into `dist/`.
 
-## Support
+### Hot reload inside Docker
 
-Nest is an MIT-licensed open source project. It can grow thanks to the sponsors and support by the amazing backers. If you'd like to join them, please [read more here](https://docs.nestjs.com/support).
+```bash
+pnpm docker:up:dev
+```
 
-## Stay in touch
+Mounts `src/` into the container and runs `start:dev`.
 
-- Author - [Kamil Myśliwiec](https://twitter.com/kammysliwiec)
-- Website - [https://nestjs.com](https://nestjs.com/)
-- Twitter - [@nestframework](https://twitter.com/nestframework)
+## Scripts
+
+| Script | Purpose |
+| --- | --- |
+| `pnpm start:dev` | Watch mode |
+| `pnpm build` | Compile to `dist/` (SWC, with typecheck) |
+| `pnpm typecheck` | `tsc --noEmit` across src, tests, and scripts |
+| `pnpm lint` / `lint:ci` | ESLint, with and without `--fix` |
+| `pnpm test` | Unit tests |
+| `pnpm test:e2e` | End-to-end and integration tests (needs Postgres + Redis) |
+| `pnpm test:smoke` | Boots `dist/main`, checks liveness, asserts clean SIGTERM exit |
+| `pnpm check:env` | Fails if `.env.example` and the env schema have drifted |
+| `pnpm db:generate` | Generate the Prisma client |
+| `pnpm db:migrate` | Create and apply a migration (development) |
+| `pnpm db:migrate:deploy` | Apply pending migrations (CI, production) |
+| `pnpm db:seed` | Run the idempotent seed |
+| `pnpm db:reset` | Drop, re-migrate, and re-seed |
+| `pnpm db:studio` | Prisma Studio |
+| `pnpm docker:up` / `:dev` / `docker:down` | Compose stack |
+
+## Layout
+
+```
+src/
+  common/           # applies to every request
+    context/        # AsyncLocalStorage request context
+    decorators/     # @NoEnvelope()
+    errors/         # error codes, ApiException
+    filters/        # global exception filter
+    http/           # envelope types, health route constants
+    interceptors/   # response envelope
+    middleware/     # request context
+    pipes/          # validation pipe factory
+  config/           # env schema + typed namespaces (only place reading process.env)
+  infrastructure/   # technical adapters: prisma/, redis/, logger/, health/
+  modules/          # feature modules — yours go here
+  generated/        # Prisma client (gitignored)
+```
+
+`infrastructure/` holds what could be swapped without touching business logic. `modules/` holds what exists because the product needs it.
+
+## API contract
+
+Every application route lives under `/api/v1`. Health endpoints sit outside it so probe paths survive an API version bump.
+
+**Success** — handlers return their payload; wrapping is global:
+
+```json
+{
+  "success": true,
+  "data": { "id": "1", "name": "Ada" },
+  "meta": { "requestId": "0f9c…", "timestamp": "2026-01-01T00:00:00.000Z" }
+}
+```
+
+**Error** — every failure, from any source:
+
+```json
+{
+  "success": false,
+  "error": {
+    "code": "VALIDATION_FAILED",
+    "message": "Request validation failed.",
+    "details": [{ "field": "email", "constraint": "isEmail", "message": "email must be an email" }]
+  },
+  "meta": { "requestId": "0f9c…", "timestamp": "2026-01-01T00:00:00.000Z" }
+}
+```
+
+Clients branch on `error.code`, not the HTTP status. Current codes: `VALIDATION_FAILED`, `BAD_REQUEST`, `UNAUTHORIZED`, `FORBIDDEN`, `NOT_FOUND`, `CONFLICT`, `RATE_LIMITED`, `SERVICE_UNAVAILABLE`, `INTERNAL_ERROR`. Codes are additive — never rename one.
+
+Internal errors never leak: stack traces, SQL, and connection strings are logged with the request ID and replaced by a generic message in the response.
+
+### Correlation IDs
+
+Send `x-request-id` and it comes back on the response and appears in every log line for that request. Send nothing and one is generated. Malformed values (over 64 characters, or outside `[A-Za-z0-9_-]`) are replaced rather than rejected, and are never used for anything but correlation.
+
+### Opting out of the envelope
+
+```ts
+@Get('download')
+@NoEnvelope()
+download() {
+  return stream;
+}
+```
+
+Errors thrown from an exempt handler still use the error envelope. The health endpoints are the sole exception — orchestrators need the Terminus payload even on failure.
+
+### Third-party webhooks
+
+The global pipe uses `forbidNonWhitelisted`, so a payload carrying fields you do not model is a `400`. That is the right default for a first-party API and the wrong one for, say, Stripe. Webhook routes need the raw body and must bypass the global pipe at the route level (`@Body()` with a raw-body parser and a per-route `@UsePipes()` override), plus `@NoEnvelope()` if the sender expects a specific response shape.
+
+## Database
+
+The client is generated into `src/generated/prisma` so `nest build` compiles it into `dist/`; the runtime image needs no Prisma CLI. Prisma 7 requires a driver adapter, so the connection string flows from the validated `database` config namespace rather than Prisma reading `process.env` itself.
+
+```bash
+pnpm db:migrate --name add_widgets   # create + apply in development
+pnpm db:migrate:deploy               # apply pending (CI, production)
+pnpm db:seed                         # idempotent; safe to re-run
+pnpm db:reset                        # destructive: drop, migrate, seed
+```
+
+Migrations never run at application startup — N replicas booting together would race the same migration. Apply them as an explicit deploy step.
+
+**Rolling back a migration already applied to a shared database:**
+
+```bash
+# 1. Mark it rolled back so Prisma stops considering it applied
+pnpm exec prisma migrate resolve --rolled-back 20260101000000_add_widgets
+# 2. Revert the schema change and the migration directory in git
+# 3. Create a forward migration that undoes the change
+pnpm db:migrate --name revert_widgets
+```
+
+Prisma has no automatic down-migrations; forward-only is the supported path.
+
+## Testing
+
+```bash
+pnpm test        # unit — no external services
+pnpm test:e2e    # e2e + integration — needs Postgres and Redis
+```
+
+`.env.test` is committed (it holds no secrets) so tests run on a fresh clone with no setup. Use `.env.test.local` (gitignored) to point at different ports locally.
+
+Integration tests run against real Postgres and Redis, not mocks — that is what makes the health checks, Prisma error mapping, and shutdown behavior meaningful.
+
+## Docker
+
+Multi-stage build on `node:22-alpine`: `deps` → `prod-deps` → `build` → `runner`. The runtime image carries production dependencies and `dist/` only — no sources, no dev dependencies, non-root `node` user, `init: true` for signal handling.
+
+Alpine is safe here because Prisma 7 ships a WASM query compiler with no native engine binary; the musl/OpenSSL binary-target problem that made Alpine risky under Prisma 6 no longer applies. If you add native dependencies (`bcrypt`, `sharp`), consider switching the base image to `node:22-bookworm-slim`.
+
+## CI
+
+`.github/workflows/ci.yml` runs on push and pull request with Postgres and Redis service containers: install (frozen lockfile) → generate → env drift check → lint → typecheck → unit tests → migrate → e2e → build → boot smoke test → image build. Cheap gates run first.
+
+The boot smoke test exists because path aliases are declared in `tsconfig.json` and mirrored in `.swcrc`; a drift between them passes lint, typecheck, and every test, and fails only when the built output actually runs.
+
+## Conventions
+
+- Read configuration through the typed namespaces in `src/config/`. `process.env` outside that directory is a lint error.
+- Handlers return payloads, not envelopes.
+- Every query and param DTO carries explicit `class-validator` decorators — implicit conversion coerces types but does not reject them.
+- Use `PrismaService`; do not instantiate a second client.
+- Seeds use `upsert`, never `create`.
+
+## Specs
+
+Planning artifacts live in `openspec/`. This foundation was built from `openspec/changes/add-platform-foundation/`, whose `design.md` records why each decision was made and what was rejected.
 
 ## License
 
-Nest is [MIT licensed](https://github.com/nestjs/nest/blob/master/LICENSE).
+MIT.

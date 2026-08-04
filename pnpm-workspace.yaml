@@ -1,5 +1,7 @@
 # Single-package workspace (pnpm v11+ config lives here).
 # Omit packages list → only the root package is included.
 allowBuilds:
+  '@prisma/engines': true
   '@swc/core': true
+  prisma: true
   unrs-resolver: true

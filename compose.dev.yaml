@@ -1,0 +1,16 @@
+# Overlay for local development: hot reload against mounted sources.
+#   docker compose -f compose.yaml -f compose.dev.yaml up
+# or: pnpm docker:up:dev
+services:
+  app:
+    build:
+      target: development
+    environment:
+      NODE_ENV: development
+    volumes:
+      # Sources are mounted; node_modules and the generated client stay in the
+      # image so host and container never fight over platform-specific builds.
+      - ./src:/app/src
+      - ./prisma:/app/prisma
+      - ./test:/app/test
+    command: pnpm start:dev
