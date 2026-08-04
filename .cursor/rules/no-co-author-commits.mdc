@@ -1,0 +1,29 @@
+---
+description: Never add Co-authored-by trailers to git commit messages
+alwaysApply: true
+---
+
+# No co-authors in commits
+
+When creating git commits in this repository:
+
+- Do **not** add `Co-authored-by:` (or any co-author trailer) to the commit message
+- Do **not** attribute Cursor, Claude, or other AI tools as co-authors
+- Commit messages should contain only the subject/body describing the change
+
+```bash
+# ❌ BAD
+git commit -m "$(cat <<'EOF'
+Add auth module.
+
+Co-authored-by: Cursor <cursoragent@cursor.com>
+EOF
+)"
+
+# ✅ GOOD
+git commit -m "$(cat <<'EOF'
+Add auth module.
+
+EOF
+)"
+```

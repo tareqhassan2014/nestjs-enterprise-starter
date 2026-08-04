@@ -1,0 +1,17 @@
+schema: spec-driven
+
+context: |
+  Open-source NestJS enterprise starter. Fork for real products.
+  Stack: NestJS (Express), Prisma, PostgreSQL, Redis, Better Auth,
+  Lite/Pro plans (monthly/yearly), Redis throttling, daily/weekly limits,
+  pay-as-you-go credits + Stripe, uniform DTO validation/response envelope,
+  admin monitoring. See root AGENTS.md for agent instructions.
+  CLAUDE.md only imports AGENTS.md — do not duplicate content there.
+
+rules:
+  proposal:
+    - Keep proposals focused; include Non-goals
+    - Call out auth, billing, credits, and throttle impact when relevant
+  tasks:
+    - Prefer small, verifiable tasks
+    - Include tests for auth, limits, and credit ledger when touched
