@@ -6,7 +6,7 @@
   "private": true,
   "license": "UNLICENSED",
   "engines": {
-    "node": ">=22"
+    "node": ">=22.12"
   },
   "packageManager": "pnpm@11.11.0",
   "scripts": {
@@ -23,7 +23,7 @@
     "test": "cross-env NODE_OPTIONS=--experimental-vm-modules jest",
     "test:watch": "cross-env NODE_OPTIONS=--experimental-vm-modules jest --watch",
     "test:cov": "cross-env NODE_OPTIONS=--experimental-vm-modules jest --coverage",
-    "test:debug": "node --inspect-brk -r tsconfig-paths/register -r ts-node/register node_modules/.bin/jest --runInBand",
+    "test:debug": "node --experimental-vm-modules --inspect-brk -r tsconfig-paths/register -r ts-node/register node_modules/.bin/jest --runInBand",
     "test:e2e": "cross-env NODE_OPTIONS=--experimental-vm-modules jest --config ./test/jest-e2e.config.ts",
     "test:smoke": "ts-node -P tsconfig.scripts.json scripts/smoke-boot.ts",
     "db:generate": "prisma generate",
@@ -45,10 +45,14 @@
     "@nestjs/terminus": "^11.1.1",
     "@prisma/adapter-pg": "^7.9.1",
     "@prisma/client": "^7.9.1",
+    "better-auth": "^1.6.25",
     "class-transformer": "^0.5.1",
     "class-validator": "^0.15.1",
+    "express": "^5.2.1",
+    "helmet": "^8.3.0",
     "ioredis": "^6.0.0",
     "nestjs-pino": "^4.6.1",
+    "nodemailer": "^9.0.3",
     "pino": "^10.3.1",
     "pino-http": "^11.0.0",
     "reflect-metadata": "^0.2.2",
@@ -56,6 +60,7 @@
     "zod": "^4.4.3"
   },
   "devDependencies": {
+    "@better-auth/utils": "^0.4.2",
     "@eslint/eslintrc": "^3.2.0",
     "@eslint/js": "^9.18.0",
     "@nestjs/cli": "^11.0.0",
@@ -66,6 +71,7 @@
     "@types/express": "^5.0.0",
     "@types/jest": "^30.0.0",
     "@types/node": "^24.0.0",
+    "@types/nodemailer": "^8.0.1",
     "@types/supertest": "^7.0.0",
     "cross-env": "^10.1.0",
     "dotenv": "^17.4.2",

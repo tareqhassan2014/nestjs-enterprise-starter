@@ -10,6 +10,7 @@ import {
 import { NoEnvelope } from '@common/decorators/no-envelope.decorator';
 import { redisConfig } from '@config/redis.config';
 import { PrismaService } from '@infrastructure/prisma/prisma.service';
+import { Public } from '@modules/auth/auth.decorators';
 
 import { RedisHealthIndicator } from './redis.health';
 
@@ -17,7 +18,12 @@ import { RedisHealthIndicator } from './redis.health';
  * Version-neutral and excluded from the global prefix, so probe paths stay at
  * `/health/*` across API versions. `@NoEnvelope()` keeps the Terminus payload
  * intact for orchestrators.
+ *
+ * `@Public()` is not optional here. Routes are authenticated by default, and an
+ * orchestrator presents no credentials — without this, readiness would fail
+ * closed and the orchestrator would kill a perfectly healthy instance.
  */
+@Public()
 @Controller({ path: 'health', version: VERSION_NEUTRAL })
 export class HealthController {
   constructor(

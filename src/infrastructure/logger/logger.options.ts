@@ -17,7 +17,25 @@ import type { LoggerConfig } from '@config/logger.config';
  * covers realistic log payloads. Add a level here rather than redacting
  * ad hoc at a call site.
  */
-const SENSITIVE_KEYS = ['password', 'token', 'secret', 'apiKey', 'accessToken'];
+const SENSITIVE_KEYS = [
+  'password',
+  'token',
+  'secret',
+  'apiKey',
+  'accessToken',
+
+  // Credentials this application now handles directly.
+  'sessionToken',
+  'refreshToken',
+  'idToken',
+  'clientSecret',
+  'backupCodes',
+  'totpCode',
+  'otp',
+  'code',
+  'newPassword',
+  'currentPassword',
+];
 
 function redactionPaths(): string[] {
   const headerPaths = [
@@ -92,10 +110,19 @@ export function buildLoggerParams(config: LoggerConfig): Params {
        * `mixin` covers application logs; `customProps` covers the automatic
        * request-completion log, which is emitted from a `finish` listener that
        * may sit outside the request's AsyncLocalStorage scope.
+       *
+       * `userId` appears from the moment `AuthGuard` resolves the session, so
+       * entries written earlier in the same request carry `requestId` only —
+       * which is what joins them to the ones that do identify the actor.
        */
       mixin: (): Record<string, string> => {
         const requestId = RequestContext.getRequestId();
-        return requestId ? { requestId } : {};
+        const userId = RequestContext.getUserId();
+
+        return {
+          ...(requestId ? { requestId } : {}),
+          ...(userId ? { userId } : {}),
+        };
       },
 
       customProps: (req: IncomingMessage): Record<string, string> => {

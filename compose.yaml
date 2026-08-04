@@ -32,6 +32,26 @@ services:
       timeout: 5s
       retries: 10
 
+  # Catches outbound mail locally so the stack has a real, delivering SMTP
+  # transport and verification links are readable in a browser at
+  # http://localhost:8025 — the app runs with NODE_ENV=production, where the
+  # recording `log` transport is rejected precisely because it would make
+  # sign-up look successful while every message vanished.
+  mailpit:
+    image: axllent/mailpit:latest
+    restart: unless-stopped
+    ports:
+      - '${MAILPIT_SMTP_HOST_PORT:-1025}:1025'
+      - '${MAILPIT_UI_HOST_PORT:-8025}:8025'
+    environment:
+      MP_SMTP_AUTH_ACCEPT_ANY: 1
+      MP_SMTP_AUTH_ALLOW_INSECURE: 1
+    healthcheck:
+      test: ['CMD', 'sh', '-c', 'nc -z localhost 1025']
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
   app:
     build:
       context: .
@@ -51,12 +71,27 @@ services:
       DATABASE_URL: postgresql://postgres:postgres@postgres:5432/nestjs_enterprise?schema=public
       REDIS_URL: redis://redis:6379
       HOST: 0.0.0.0
+      # Local-only, and deliberately not the `.env.example` placeholder: because
+      # this service runs with NODE_ENV=production, boot validation rejects that
+      # placeholder to stop it reaching a real deployment. Replace this with a
+      # generated secret (`openssl rand -base64 32`) anywhere real, in the same
+      # category as the `postgres`/`postgres` credentials above.
+      BETTER_AUTH_SECRET: local-compose-only-secret-not-for-any-deployment
+      # Mail goes to Mailpit, so a delivering transport exists locally.
+      MAIL_TRANSPORT: smtp
+      SMTP_HOST: mailpit
+      SMTP_PORT: '1025'
+      SMTP_USER: dev
+      SMTP_PASSWORD: dev
+      SMTP_SECURE: 'false'
     ports:
       - '${APP_HOST_PORT:-3000}:3000'
     depends_on:
       postgres:
         condition: service_healthy
       redis:
+        condition: service_healthy
+      mailpit:
         condition: service_healthy
 
 volumes:

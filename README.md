@@ -1,6 +1,6 @@
 # NestJS Enterprise Starter
 
-An opinionated NestJS 11 starter with the cross-cutting substrate already built: validated configuration, a uniform API contract, structured logging with request correlation, health checks, Prisma + PostgreSQL, Redis, Docker, and CI.
+An opinionated NestJS 11 starter with the cross-cutting substrate already built: validated configuration, a uniform API contract, authentication and strict RBAC, structured logging with request correlation, health checks, Prisma + PostgreSQL, Redis, Docker, and CI.
 
 Fork it and build features on top — the parts every service needs are decided and wired.
 
@@ -15,14 +15,20 @@ Fork it and build features on top — the parts every service needs are decided 
 | Logging | Pino — JSON in production, pretty in development, sensitive fields redacted |
 | Health | `/health/live` (no dependencies) and `/health/ready` (Postgres + Redis) |
 | Persistence | Prisma 7 with the pg driver adapter, versioned migrations, idempotent seed |
-| Local stack | Docker Compose: app + Postgres + Redis, with healthchecks |
+| Authentication | Better Auth: email/password with verification, Google + Apple OAuth, database sessions over cookie or bearer |
+| Two-factor | TOTP enrolment with encrypted single-use backup codes |
+| Authorization | Deny-by-default guards, roles and assignments in the database over a code-declared permission catalogue |
+| Abuse resistance | Per-address auth rate limits on Redis, plus self-healing per-account lockout |
+| Transport security | Helmet with an API-appropriate CSP, CORS allowlist, hardened session cookies |
+| Mail | Provider-agnostic port with a recording dev adapter and an SMTP adapter |
+| Local stack | Docker Compose: app + Postgres + Redis + Mailpit, with healthchecks |
 | CI | GitHub Actions: lint, typecheck, unit, integration, build, boot smoke test, image build |
 
-Not included by design: authentication, RBAC, billing, plans, credits, and throttling. Those are separate changes that build on this foundation.
+Not included by design: billing, plans, entitlements, credits, application-wide throttling, and admin APIs. Those are separate changes that build on this foundation.
 
 ## Requirements
 
-- Node.js 22+
+- Node.js 22.12+ — the floor is not arbitrary: `better-auth` is ESM-only and this project compiles to CommonJS, so it is loaded through Node's `require(esm)`, unflagged only from 22.12
 - pnpm 11+ (`corepack enable`)
 - Docker (for Postgres and Redis)
 
@@ -31,7 +37,9 @@ Not included by design: authentication, RBAC, billing, plans, credits, and throt
 ```bash
 cp .env.example .env
 pnpm install
-pnpm docker:up          # app + Postgres + Redis
+pnpm docker:up          # app + Postgres + Redis + Mailpit
+pnpm db:migrate:deploy  # apply migrations
+pnpm db:seed            # permission catalogue + baseline roles
 ```
 
 Then:
@@ -40,12 +48,24 @@ Then:
 curl http://localhost:3000/health/ready
 ```
 
-If port 5432, 6379, or 3000 is already taken on your machine, set the host port in `.env` — only the host side moves, since the app reaches `postgres:5432` on the Compose network regardless:
+Seeding is not optional if you intend to use authorization: the permission catalogue and the baseline `user`/`admin` roles come from it.
+
+Verification and reset emails sent by the Compose stack are readable in Mailpit at <http://localhost:8025>.
+
+Note that the `app` service runs the production image with `NODE_ENV=production`, so boot validation refuses the `.env.example` placeholder secret and the non-delivering `log` mail transport. `compose.yaml` therefore supplies a local-only secret and points mail at Mailpit. Replace that secret anywhere real:
+
+```bash
+openssl rand -base64 32
+```
+
+If port 5432, 6379, 3000, 1025, or 8025 is already taken on your machine, set the host port in `.env` — only the host side moves, since the app reaches `postgres:5432` on the Compose network regardless:
 
 ```bash
 POSTGRES_HOST_PORT=5433
 REDIS_HOST_PORT=6380
 APP_HOST_PORT=3001
+MAILPIT_SMTP_HOST_PORT=1026
+MAILPIT_UI_HOST_PORT=8026
 ```
 
 These are read by Docker Compose, not by the application, so they are deliberately absent from `.env.example` and the env schema.
@@ -58,6 +78,7 @@ pnpm install
 pnpm docker:up postgres redis   # data services only
 pnpm db:generate
 pnpm db:migrate
+pnpm db:seed
 pnpm start:dev
 ```
 
@@ -105,8 +126,11 @@ src/
     middleware/     # request context
     pipes/          # validation pipe factory
   config/           # env schema + typed namespaces (only place reading process.env)
-  infrastructure/   # technical adapters: prisma/, redis/, logger/, health/
-  modules/          # feature modules — yours go here
+  infrastructure/   # technical adapters: prisma/, redis/, logger/, health/, mail/
+  modules/
+    auth/           # Better Auth instance + mount, AuthGuard, account & 2FA endpoints
+    authorization/  # permission catalogue, resolver + cache, PermissionsGuard
+    …               # your feature modules go here
   generated/        # Prisma client (gitignored)
 ```
 
@@ -140,7 +164,9 @@ Every application route lives under `/api/v1`. Health endpoints sit outside it s
 }
 ```
 
-Clients branch on `error.code`, not the HTTP status. Current codes: `VALIDATION_FAILED`, `BAD_REQUEST`, `UNAUTHORIZED`, `FORBIDDEN`, `NOT_FOUND`, `CONFLICT`, `RATE_LIMITED`, `SERVICE_UNAVAILABLE`, `INTERNAL_ERROR`. Codes are additive — never rename one.
+Clients branch on `error.code`, not the HTTP status. Current codes: `VALIDATION_FAILED`, `BAD_REQUEST`, `UNAUTHORIZED`, `FORBIDDEN`, `NOT_FOUND`, `CONFLICT`, `RATE_LIMITED`, `SERVICE_UNAVAILABLE`, `INTERNAL_ERROR`, `EMAIL_NOT_VERIFIED`, `TWO_FACTOR_REQUIRED`, `ACCOUNT_LOCKED`. Codes are additive — never rename one.
+
+The last three exist because each has a different remedy and a client must be able to tell them apart: verify your address, complete the second factor, or simply wait.
 
 Internal errors never leak: stack traces, SQL, and connection strings are logged with the request ID and replaced by a generic message in the response.
 
@@ -158,11 +184,191 @@ download() {
 }
 ```
 
-Errors thrown from an exempt handler still use the error envelope. The health endpoints are the sole exception — orchestrators need the Terminus payload even on failure.
+Errors thrown from an exempt handler still use the error envelope. There are two exceptions:
+
+- **Health endpoints** — orchestrators need the Terminus payload even on failure.
+- **`/api/auth/*`** — see below. Those routes never reach Nest's interceptor or filter at all.
+
+### `/api/auth/*` does not use the envelope
+
+The authentication routes are served by Better Auth's own router, mounted as Express middleware ahead of Nest's. They therefore receive **neither the global validation pipe, nor the success envelope, nor the exception filter**, and they answer in Better Auth's own shapes with its own error codes:
+
+```jsonc
+// POST /api/auth/sign-in/email — success
+{ "token": "…", "user": { "id": "…", "email": "…" } }
+
+// POST /api/auth/sign-in/email — failure
+{ "message": "Invalid email or password", "code": "INVALID_EMAIL_OR_PASSWORD" }
+```
+
+This is a real inconsistency, and it is deliberate: wrapping ~30 library-owned endpoints would mean re-declaring them and re-breaking them on every upgrade. Two rules follow:
+
+- A client must expect **two response shapes on one origin**, split by path prefix. Everything under `/api/v1` uses the envelope; `/api/auth/*` does not.
+- The surface sits outside the version segment (`/api/auth`, not `/api/v1/auth`) for the same reason `/health/*` does: the library owns that contract, so it must not move when *our* API version does. A mobile client should not need a new build because the business API went to `v2`.
+
+Our own auth-adjacent endpoints — `/api/v1/account/*` — are ordinary controllers and do use the envelope.
 
 ### Third-party webhooks
 
 The global pipe uses `forbidNonWhitelisted`, so a payload carrying fields you do not model is a `400`. That is the right default for a first-party API and the wrong one for, say, Stripe. Webhook routes need the raw body and must bypass the global pipe at the route level (`@Body()` with a raw-body parser and a per-route `@UsePipes()` override), plus `@NoEnvelope()` if the sender expects a specific response shape.
+
+## Authentication
+
+Better Auth, mounted at `/api/auth/*` and backed by the same Prisma client and Redis as everything else.
+
+| Flow | Endpoint |
+| --- | --- |
+| Register | `POST /api/auth/sign-up/email` |
+| Sign in | `POST /api/auth/sign-in/email` |
+| Sign out | `POST /api/auth/sign-out` |
+| Verify email | `GET /api/auth/verify-email?token=…` (link is mailed) |
+| Request reset | `POST /api/auth/request-password-reset` |
+| Complete reset | `POST /api/auth/reset-password` |
+| Social sign-in | `POST /api/auth/sign-in/social` (`provider: "google" \| "apple"`) |
+| 2FA challenge | `POST /api/auth/two-factor/verify-totp`, `…/verify-backup-code` |
+
+First-party endpoints, inside the envelope:
+
+| Purpose | Endpoint |
+| --- | --- |
+| Current principal, roles, permissions | `GET /api/v1/account/me` |
+| List own sessions | `GET /api/v1/account/sessions` |
+| Revoke one own session | `DELETE /api/v1/account/sessions/:id` |
+| Revoke all but current | `POST /api/v1/account/sessions/revoke-others` |
+| 2FA status / enable / verify / disable | `GET|POST /api/v1/account/two-factor…` |
+| Re-issue backup codes | `POST /api/v1/account/two-factor/backup-codes` |
+
+### Sessions
+
+Sessions are **rows in Postgres**, cached in Redis. That is what makes revocation immediate: sign out, or revoke a session from another device, and the next request with that token is rejected — there is no signed-cookie window to wait out.
+
+Two transports carry the same session token:
+
+- **Cookie** for browsers — `HttpOnly`, signed, `SameSite=Lax`, `Secure` whenever `APP_URL` is `https`.
+- **`Authorization: Bearer <token>`** for mobile and CLI clients.
+
+One session model means one expiry rule and one revocation path. Revoking kills both transports together.
+
+Redis is a cache here and never a source of truth. If it is unavailable, session reads fall through to Postgres and requests keep working — degraded in latency, not in correctness.
+
+### Email verification is required
+
+A new account cannot obtain a session until its address is verified. `MAIL_TRANSPORT=log` prints the link into the application log in development; the Compose stack sends through Mailpit, where you can read it at <http://localhost:8025>.
+
+Following an already-used verification link is a harmless no-op rather than an error — mail clients and link scanners pre-fetch URLs, and showing a real user a failure for a verification that already succeeded is worse than accepting it. Password-reset tokens *are* strictly single-use, because replaying one would set a password twice.
+
+### OAuth providers
+
+Each provider is optional **as a group**. Supply both variables to enable it, neither to disable it. Supplying only one fails at boot, naming what is missing:
+
+```bash
+GOOGLE_CLIENT_ID=…
+GOOGLE_CLIENT_SECRET=…
+```
+
+There is deliberately no `GOOGLE_ENABLED` flag — presence of the credentials *is* the switch, so configuration cannot contradict itself.
+
+## Authorization
+
+Every route requires an authenticated session **unless it says otherwise**. A controller you add today is protected before you think about protecting it.
+
+```ts
+@Public()                                  // the only way to open a route
+@Get('status')
+status() { … }
+
+@RequirePermissions('user:list')           // all listed permissions required
+@Get('users')
+list() { … }
+
+@RequireRoles('admin')                     // any one listed role suffices
+@Delete('users/:id')
+remove() { … }
+
+@Get('me')
+me(@CurrentUser() user: AuthenticatedPrincipal) { … }
+```
+
+`rg '@Public'` is a complete audit of everything reachable without credentials.
+
+### The model: assignments in the database, vocabulary in code
+
+- **`src/modules/authorization/permissions.ts`** declares every permission key. `@RequirePermissions` is typed against it, so `'user:raed'` is a compile error rather than a check that silently never passes.
+- **`Role`, `Permission`, `RolePermission`, `UserRole`** hold the assignments. An operator can create roles and grant or revoke them at runtime with no deployment.
+- The seed mirrors the code-declared catalogue into `Permission` and asserts the baseline `user` and `admin` roles. A permission row that no declaration names is inert, because no annotation can reference it.
+
+Adding a permission:
+
+```bash
+# 1. Append it to PERMISSIONS in src/modules/authorization/permissions.ts
+# 2. Grant it to a role in BASELINE_ROLES (admin gets everything automatically)
+# 3. Re-seed — upsert-only, so this is safe against a populated database
+pnpm db:seed
+```
+
+Effective permission sets are cached in Redis and invalidated by **advancing a version counter**, not by deleting keys: one role's mapping can affect thousands of users, and there is no key to enumerate for "everyone holding this role". Call `PermissionResolver.invalidate()` after mutating roles, mappings, or assignments.
+
+### The guard chain
+
+```
+AuthGuard          → establishes the principal, or 401
+PermissionsGuard   → decides whether that principal may proceed, or 403
+[reserved]           plan entitlements → throttling/usage limits → credit checks
+```
+
+Order is the contract, and it is registered in `AuthorizationModule`. Later stages append **after** authorization and must consume the principal `AuthGuard` already resolved rather than re-resolving the session.
+
+A `403` says only that you were refused. It never enumerates which permissions were required or missing — that would describe the policy to an attacker. The full reason is logged with the request id and the user id.
+
+## Two-factor authentication
+
+TOTP, with single-use backup codes.
+
+1. `POST /api/v1/account/two-factor/enable` with the password → returns a provisioning URI and backup codes. **2FA is not active yet.**
+2. `POST /api/v1/account/two-factor/verify` with a code from the authenticator → now it is active.
+
+The two-step enrolment is deliberate: activating on step 1 would let a user lock themselves out with a misconfigured app. Enabling rotates the session cookie, so a client must follow the new `Set-Cookie`.
+
+Once active, a correct password yields a **pending challenge**, not a session (`twoFactorRedirect: true`). Complete it with a TOTP code or an unused backup code. Backup codes are stored encrypted under `BETTER_AUTH_SECRET` — the library's default would store them as plaintext JSON, which this starter overrides.
+
+Recovery: `GET /api/v1/account/two-factor` reports how many codes remain, so a user can re-issue before running out. Re-issuing and disabling both require the password, so a stolen session cannot strip the second factor.
+
+## Abuse resistance
+
+Two mechanisms, because they solve different problems.
+
+**Per-address rate limits** on the whole auth surface, tighter on sign-in, sign-up, reset, and 2FA verification. Counters live in Redis, so limits hold across instances. Boot fails if the credential paths are not configured strictly than the general surface, so the guarantee survives edited values.
+
+**Per-account lockout**, because an address-keyed limiter does nothing about a thousand hosts each making four guesses at one password. After a threshold, retry delay grows exponentially to a cap, and the window **expires on its own** — no sticky lock, and no administrative unlock step. That is intentional: a permanent lock would hand an attacker the ability to deny a real user their own account.
+
+Counters are consumed for addresses that are not registered, and keys hold a hash of the normalised address rather than the address itself, so the limiter can neither be used to enumerate accounts nor leave inboxes lying in the Redis keyspace.
+
+`TRUST_PROXY` is off by default. Turn it on only when the service genuinely sits behind a proxy you control — otherwise any client can forge `X-Forwarded-For` and choose its own rate-limit identity.
+
+## Mail
+
+Application code sends through one port, `MailerService`, and never names a provider.
+
+| `MAIL_TRANSPORT` | Behaviour |
+| --- | --- |
+| `log` | Records the message and logs recipient and subject. **Rejected when `NODE_ENV=production`.** |
+| `smtp` | Delivers over SMTP. Requires the whole `SMTP_*` group. |
+
+`log` is refused in production on purpose: it would make sign-up appear to succeed while every verification and reset message silently vanished, leaving accounts nobody can reach. A boot failure is strictly better than unreachable users.
+
+To use a hosted provider, implement `MailerService` in `src/infrastructure/mail/`, bind it in `MailModule`, and change one config value. No authentication code changes.
+
+## Knobs you may want, and what they cost
+
+Each of these is a deliberate default. Change them knowingly.
+
+| Knob | Where | Consequence |
+| --- | --- | --- |
+| `session.cookieCache` | `auth.factory.ts` | Removes the Redis read per request, but hands the session to the client in a signed cookie — **a revoked session keeps working until that cache expires**. Database sessions were chosen for revocability; this trades it back for latency. |
+| `sameSite: 'lax'` | `auth.factory.ts` | Required for the OAuth redirect return leg. A browser SPA on a *different registrable domain* needs `'none'` plus `Secure` and a real CORS origin — which also permits cross-site sends. |
+| Account linking | Better Auth default | An OAuth sign-in matching an existing **verified** email links to that account. Standard, and usually what you want — but confirm it against your threat model, because it means the provider's verification is trusted. |
+| `storeBackupCodes` | `auth.factory.ts` | Set to `'encrypted'`. The library default stores backup codes as plaintext JSON. |
+| `TRUST_PROXY` | env | Off by default. On without a real proxy in front means clients pick their own rate-limit identity. |
 
 ## Database
 
@@ -198,17 +404,23 @@ pnpm test:e2e    # e2e + integration — needs Postgres and Redis
 
 `.env.test` is committed (it holds no secrets) so tests run on a fresh clone with no setup. Use `.env.test.local` (gitignored) to point at different ports locally.
 
-Integration tests run against real Postgres and Redis, not mocks — that is what makes the health checks, Prisma error mapping, and shutdown behavior meaningful.
+Integration tests run against real Postgres and Redis, not mocks — that is what makes the health checks, Prisma error mapping, and shutdown behavior meaningful. The auth suites go through the real HTTP surface too: they register, read the verification link out of the recorded mail, sign in, and assert on actual cookies.
+
+`NODE_OPTIONS=--experimental-vm-modules` in the `test*` scripts is **load-bearing, not incidental**. `better-auth` is ESM-only; ts-jest compiles tests to CommonJS; Jest's module registry intercepts the require before Node's `require(esm)` can bridge them. Drop the flag and every auth test fails at import with `SyntaxError: Cannot use import statement outside a module`. `src/modules/auth/better-auth-esm.spec.ts` is the regression guard.
+
+The e2e database must be migrated **and seeded**. Auth rate limits in `.env.test` are deliberately generous, because every suite signs in from the same address and production-shaped limits would throttle tests that have nothing to do with throttling; `test/auth-rate-limiting.e2e-spec.ts` builds its own app with tight limits and its own Redis database.
 
 ## Docker
 
 Multi-stage build on `node:22-alpine`: `deps` → `prod-deps` → `build` → `runner`. The runtime image carries production dependencies and `dist/` only — no sources, no dev dependencies, non-root `node` user, `init: true` for signal handling.
 
+Alpine's Node 22 tag resolves well above the 22.12 floor that `require(esm)` needs. The image build is a real gate, not a formality: a package imported for runtime values but only present transitively resolves fine in the dev tree and fails in the production image, which is exactly how `express` — imported for `json()`/`urlencoded()` — had to become a declared dependency.
+
 Alpine is safe here because Prisma 7 ships a WASM query compiler with no native engine binary; the musl/OpenSSL binary-target problem that made Alpine risky under Prisma 6 no longer applies. If you add native dependencies (`bcrypt`, `sharp`), consider switching the base image to `node:22-bookworm-slim`.
 
 ## CI
 
-`.github/workflows/ci.yml` runs on push and pull request with Postgres and Redis service containers: install (frozen lockfile) → generate → env drift check → lint → typecheck → unit tests → migrate → e2e → build → boot smoke test → image build. Cheap gates run first.
+`.github/workflows/ci.yml` runs on push and pull request with Postgres and Redis service containers: install (frozen lockfile) → generate → env drift check → lint → typecheck → unit tests → migrate → **seed** → e2e → build → boot smoke test → image build. Cheap gates run first.
 
 The boot smoke test exists because path aliases are declared in `tsconfig.json` and mirrored in `.swcrc`; a drift between them passes lint, typecheck, and every test, and fails only when the built output actually runs.
 
@@ -219,10 +431,19 @@ The boot smoke test exists because path aliases are declared in `tsconfig.json` 
 - Every query and param DTO carries explicit `class-validator` decorators — implicit conversion coerces types but does not reject them.
 - Use `PrismaService`; do not instantiate a second client.
 - Seeds use `upsert`, never `create`.
+- Routes are protected by default. Open one with `@Public()` and nothing else, so `rg '@Public'` stays a complete audit.
+- Prefer `@RequirePermissions` over `@RequireRoles`: a permission says what the route needs, a role says who happens to be allowed today, and only the former survives reorganising the roles.
+- Resolve the session once. Guards after `AuthGuard` read the principal it published; they do not call `AuthService` again.
+- Call `PermissionResolver.invalidate()` after changing roles, mappings, or assignments.
+- Send mail through `MailerService`, never a provider SDK directly.
+- New permission keys go in `src/modules/authorization/permissions.ts` first — the database is seeded from it, not the other way round.
 
 ## Specs
 
-Planning artifacts live in `openspec/`. This foundation was built from `openspec/changes/add-platform-foundation/`, whose `design.md` records why each decision was made and what was rejected.
+Planning artifacts live in `openspec/`. Each change's `design.md` records why decisions were made and what was rejected:
+
+- `openspec/changes/archive/…-add-platform-foundation/` — configuration, envelope, logging, persistence, Docker, CI.
+- `openspec/changes/add-auth-security/` — authentication, RBAC, 2FA, rate limiting, transport security. Worth reading before changing anything under `src/modules/auth/`: several settings there are non-obvious overrides of library defaults, and the reasoning (with the source verified against) is recorded rather than reconstructed.
 
 ## License
 

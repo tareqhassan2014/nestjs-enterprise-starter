@@ -21,15 +21,207 @@ datasource db {
 
 /// Runtime settings and feature flags.
 ///
-/// The one baseline model: it gives the seed hook something idempotent and real
-/// to do, and gives persistence tests a genuine write/read round trip. It is
-/// deliberately not a placeholder `User` — Better Auth generates its own
-/// User/Session/Account models, and a stand-in here would guarantee a
-/// conflicting migration later.
+/// Kept deliberately unrelated to identity, so the seed hook and the
+/// persistence round-trip test exercise a real write/read cycle independently of
+/// authentication.
 model AppSetting {
   key       String   @id
   value     Json
   updatedAt DateTime @updatedAt
 
   @@map("app_settings")
+}
+
+// ---------------------------------------------------------------------------
+// Identity — owned by Better Auth
+//
+// Hand-written rather than produced by `@better-auth/cli generate`, which
+// rewrites this file and would drop these comments. The field list was taken
+// from `getAuthTables()` in the installed better-auth (1.6.25) — the same
+// definitions its Prisma adapter reads — not from documentation.
+//
+// The MODEL names must stay as they are: the adapter reaches these tables as
+// `prisma.user`, `prisma.session`, `prisma.account`, `prisma.verification`, and
+// `prisma.twoFactor`. Table names are @@map-ed to snake_case to match
+// `app_settings`; columns keep their camelCase names, as in the baseline model.
+//
+// Renaming a field here without telling Better Auth (via its `fields` option)
+// breaks it silently, so don't.
+// ---------------------------------------------------------------------------
+
+model User {
+  id            String  @id @default(cuid())
+  name          String
+  email         String  @unique
+  emailVerified Boolean @default(false)
+  image         String?
+
+  /// Maintained by the twoFactor plugin; the enrolled secret lives in TwoFactor.
+  twoFactorEnabled Boolean? @default(false)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  accounts  Account[]
+  sessions  Session[]
+  twoFactor TwoFactor[]
+  roles     UserRole[]
+
+  @@map("users")
+}
+
+/// A session is a row, not a signed claim — which is what makes revocation
+/// immediate. Redis caches these (see design.md decision 3); this table stays
+/// authoritative, so a cache miss falls through to here rather than logging
+/// everyone out.
+model Session {
+  id        String   @id @default(cuid())
+  expiresAt DateTime
+  token     String   @unique
+  ipAddress String?
+  userAgent String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("sessions")
+}
+
+/// One row per credential: the password row for email/password sign-in, plus a
+/// row per linked OAuth provider.
+model Account {
+  id         String @id @default(cuid())
+  accountId  String
+  providerId String
+
+  accessToken           String?
+  refreshToken          String?
+  idToken               String?
+  accessTokenExpiresAt  DateTime?
+  refreshTokenExpiresAt DateTime?
+  scope                 String?
+
+  /// Scrypt hash for the credentials provider; null for OAuth accounts.
+  password String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([providerId, accountId])
+  @@index([userId])
+  @@map("accounts")
+}
+
+/// Short-lived, single-use tokens: email verification and password reset.
+model Verification {
+  id         String   @id @default(cuid())
+  identifier String
+  value      String
+  expiresAt  DateTime
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([identifier])
+  @@map("verifications")
+}
+
+/// TOTP enrolment and backup codes. `backupCodes` is a single encrypted blob
+/// managed by the plugin — never plaintext, and never read by our code.
+model TwoFactor {
+  id          String  @id @default(cuid())
+  secret      String
+  backupCodes String
+  verified    Boolean? @default(false)
+
+  /// The plugin's own 2FA attempt throttling, separate from our sign-in lockout.
+  failedVerificationCount Int?      @default(0)
+  lockedUntil             DateTime?
+
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("two_factors")
+}
+
+// ---------------------------------------------------------------------------
+// Access control — ours
+//
+// Assignments and mappings are data, editable at runtime. The *vocabulary* of
+// permission keys is code (src/modules/authorization/permissions.ts) and is
+// seeded from there, so a decorator cannot name a permission that does not
+// exist and an operator cannot invent one that no guard consults.
+// ---------------------------------------------------------------------------
+
+model Role {
+  id          String  @id @default(cuid())
+  name        String  @unique
+  description String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  permissions RolePermission[]
+  users       UserRole[]
+
+  @@map("roles")
+}
+
+/// One row per permission key declared in code, e.g. `user:read`.
+model Permission {
+  id          String  @id @default(cuid())
+  key         String  @unique
+  description String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  roles RolePermission[]
+
+  @@map("permissions")
+}
+
+/// The composite unique is what makes seeding idempotent — the database
+/// prevents duplicates, rather than the seed script remembering to check.
+model RolePermission {
+  id String @id @default(cuid())
+
+  roleId       String
+  permissionId String
+
+  role       Role       @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  permission Permission @relation(fields: [permissionId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now())
+
+  @@unique([roleId, permissionId])
+  @@index([roleId])
+  @@index([permissionId])
+  @@map("role_permissions")
+}
+
+/// A user may hold several roles; effective permissions are the union.
+model UserRole {
+  id String @id @default(cuid())
+
+  userId String
+  roleId String
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  role Role @relation(fields: [roleId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now())
+
+  @@unique([userId, roleId])
+  @@index([userId])
+  @@index([roleId])
+  @@map("user_roles")
 }

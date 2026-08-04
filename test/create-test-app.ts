@@ -1,8 +1,8 @@
-import type { INestApplication } from '@nestjs/common';
+import type { NestExpressApplication } from '@nestjs/platform-express';
 import { Test, type TestingModuleBuilder } from '@nestjs/testing';
 
 import { AppModule } from '@/app.module';
-import { configureApp } from '@/bootstrap';
+import { APP_OPTIONS, configureApp } from '@/bootstrap';
 
 /**
  * Builds the app the way `main.ts` does, so e2e tests exercise the real
@@ -11,7 +11,7 @@ import { configureApp } from '@/bootstrap';
 export async function createTestApp(
   customise?: (builder: TestingModuleBuilder) => TestingModuleBuilder,
   extraImports: unknown[] = [],
-): Promise<INestApplication> {
+): Promise<NestExpressApplication> {
   let builder = Test.createTestingModule({
     imports: [AppModule, ...(extraImports as [])],
   });
@@ -23,7 +23,14 @@ export async function createTestApp(
   const moduleRef = await builder.compile();
 
   // Log assertions live in unit tests; e2e output stays readable.
-  const app = moduleRef.createNestApplication({ logger: false });
+  //
+  // APP_OPTIONS is spread in deliberately: `createNestApplication` inherits
+  // nothing from `main.ts`, so omitting it would build the app with Nest's body
+  // parsers enabled and the auth surface would hang here but work in production.
+  const app = moduleRef.createNestApplication<NestExpressApplication>({
+    ...APP_OPTIONS,
+    logger: false,
+  });
 
   configureApp(app);
 

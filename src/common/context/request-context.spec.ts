@@ -69,4 +69,49 @@ describe('RequestContext', () => {
       Promise.all([observe('one'), observe('two')]),
     ).resolves.toEqual(['one', 'two']);
   });
+
+  describe('authenticated principal', () => {
+    it('is absent until the guard resolves a session', () => {
+      RequestContext.run({ requestId: 'r' }, () => {
+        expect(RequestContext.getUserId()).toBeUndefined();
+      });
+    });
+
+    it('is readable from a nested async call stack once set', async () => {
+      await RequestContext.run({ requestId: 'r' }, async () => {
+        RequestContext.setUserId('user-1');
+
+        await new Promise((resolve) => setTimeout(resolve, 1));
+
+        const deepInAService = async (): Promise<string | undefined> => {
+          await Promise.resolve();
+          return RequestContext.getUserId();
+        };
+
+        expect(await deepInAService()).toBe('user-1');
+      });
+    });
+
+    it('does not leak between concurrent requests', async () => {
+      const handle = (id: string): Promise<string | undefined> =>
+        RequestContext.run({ requestId: id }, async () => {
+          RequestContext.setUserId(`user-for-${id}`);
+          await new Promise((resolve) => setTimeout(resolve, 5));
+          return RequestContext.getUserId();
+        });
+
+      await expect(Promise.all([handle('a'), handle('b')])).resolves.toEqual([
+        'user-for-a',
+        'user-for-b',
+      ]);
+    });
+
+    it('is a no-op outside a request scope rather than a throw', () => {
+      expect(() => {
+        RequestContext.setUserId('orphan');
+      }).not.toThrow();
+
+      expect(RequestContext.getUserId()).toBeUndefined();
+    });
+  });
 });

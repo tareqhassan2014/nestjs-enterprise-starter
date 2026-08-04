@@ -4,6 +4,12 @@ import type { Config } from 'jest';
 import { pathsToModuleNameMapper } from 'ts-jest';
 import * as ts from 'typescript';
 
+/**
+ * Runs under `NODE_OPTIONS=--experimental-vm-modules` (see the `test:e2e`
+ * script). That flag is load-bearing: the e2e suite boots the real application,
+ * which imports the ESM-only `better-auth` from CommonJS output. See the note
+ * in `jest.config.ts` and design.md decision 1.
+ */
 const tsconfigPath = path.resolve(process.cwd(), 'tsconfig.json');
 const { compilerOptions } = ts.readConfigFile(tsconfigPath, (filePath) =>
   ts.sys.readFile(filePath),

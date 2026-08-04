@@ -7,6 +7,11 @@ services:
       target: development
     environment:
       NODE_ENV: development
+      # Outside production the recording transport is allowed, so verification
+      # links land in the app log and no SMTP server is needed. Delete these two
+      # lines to send through Mailpit instead and read them at localhost:8025.
+      MAIL_TRANSPORT: log
+      APP_URL: http://localhost:3000
     volumes:
       # Sources are mounted; node_modules and the generated client stay in the
       # image so host and container never fight over platform-specific builds.

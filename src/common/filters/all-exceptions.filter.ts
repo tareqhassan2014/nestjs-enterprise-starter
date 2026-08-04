@@ -40,6 +40,30 @@ function isPrismaKnownRequestError(
   );
 }
 
+/**
+ * Better Auth's error class, duck-typed for the same reason as Prisma's above:
+ * matching on shape avoids importing from an ESM-only package here, and this
+ * filter is loaded on every request path including ones that never touch auth.
+ *
+ * Reached when a first-party controller calls `auth.api.*` directly — the
+ * library's own routes never enter Nest's filter at all. Without this, an
+ * ordinary "invalid code" would surface as a `500 INTERNAL_ERROR`.
+ */
+interface BetterAuthApiError {
+  name: string;
+  statusCode: number;
+  body?: { code?: unknown; message?: unknown };
+}
+
+function isBetterAuthApiError(error: unknown): error is BetterAuthApiError {
+  return (
+    typeof error === 'object' &&
+    error !== null &&
+    (error as { name?: unknown }).name === 'APIError' &&
+    typeof (error as { statusCode?: unknown }).statusCode === 'number'
+  );
+}
+
 interface ResolvedError {
   status: HttpStatus;
   code: ErrorCode;
@@ -125,6 +149,10 @@ export class AllExceptionsFilter implements ExceptionFilter {
       return resolvePrismaError(exception);
     }
 
+    if (isBetterAuthApiError(exception)) {
+      return resolveBetterAuthError(exception);
+    }
+
     return {
       status: HttpStatus.INTERNAL_SERVER_ERROR,
       code: ErrorCode.INTERNAL_ERROR,
@@ -155,6 +183,38 @@ function resolvePrismaError(error: PrismaKnownRequestError): ResolvedError {
         message: 'An unexpected error occurred.',
       };
   }
+}
+
+/**
+ * Translates a Better Auth failure into the application envelope.
+ *
+ * The library's own `code` (`INVALID_CODE`, `INVALID_PASSWORD`, …) is a different
+ * vocabulary from ours and is deliberately not forwarded as our `error.code` —
+ * that field is a published contract, and letting a dependency extend it would
+ * mean a library upgrade could silently change what clients receive. The status
+ * is honoured, our code is derived from it, and the library's message is passed
+ * through because it is the part that tells the user what to fix.
+ */
+function resolveBetterAuthError(error: BetterAuthApiError): ResolvedError {
+  const status = error.statusCode;
+
+  const message =
+    typeof error.body?.message === 'string'
+      ? error.body.message
+      : 'The request could not be completed.';
+
+  // A 5xx from the library is still an internal failure: say nothing specific.
+  // Compared as a plain number: `statusCode` comes from the library, not from
+  // Nest's HttpStatus enum, so they share no enum type.
+  if (status >= 500) {
+    return {
+      status: HttpStatus.INTERNAL_SERVER_ERROR,
+      code: ErrorCode.INTERNAL_ERROR,
+      message: 'An unexpected error occurred.',
+    };
+  }
+
+  return { status, code: errorCodeForStatus(status), message };
 }
 
 function messageFromHttpException(exception: HttpException): string {

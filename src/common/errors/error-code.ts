@@ -16,6 +16,21 @@ export const ErrorCode = {
   RATE_LIMITED: 'RATE_LIMITED',
   SERVICE_UNAVAILABLE: 'SERVICE_UNAVAILABLE',
   INTERNAL_ERROR: 'INTERNAL_ERROR',
+
+  /**
+   * Authentication outcomes a client must be able to tell apart, because each
+   * has a different remedy. All three are distinct from `UNAUTHORIZED`, which
+   * means "no usable session was presented".
+   */
+
+  /** A valid session, but the address has not been confirmed. Resend and verify. */
+  EMAIL_NOT_VERIFIED: 'EMAIL_NOT_VERIFIED',
+
+  /** Password accepted, second factor outstanding. Complete the challenge. */
+  TWO_FACTOR_REQUIRED: 'TWO_FACTOR_REQUIRED',
+
+  /** Too many failures against this account. Wait — the window expires by itself. */
+  ACCOUNT_LOCKED: 'ACCOUNT_LOCKED',
 } as const;
 
 export type ErrorCode = (typeof ErrorCode)[keyof typeof ErrorCode];

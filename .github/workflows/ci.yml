@@ -78,6 +78,12 @@ jobs:
       - name: Apply migrations
         run: pnpm db:migrate:deploy
 
+      # The access-control suites assert on the seeded permission catalogue and
+      # baseline roles, so seeding is a prerequisite for e2e rather than an
+      # optional convenience.
+      - name: Seed baseline roles and permissions
+        run: pnpm db:seed
+
       - name: End-to-end and integration tests
         run: pnpm test:e2e
 

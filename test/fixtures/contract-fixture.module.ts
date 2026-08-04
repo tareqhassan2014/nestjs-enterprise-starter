@@ -19,6 +19,7 @@ import {
 } from 'class-validator';
 
 import { NoEnvelope } from '@common/decorators/no-envelope.decorator';
+import { Public } from '@modules/auth/auth.decorators';
 
 class AddressDto {
   @IsString()
@@ -47,6 +48,14 @@ class PageQueryDto {
  * observed through; these exist so the e2e suite asserts against real routing,
  * validation, and serialisation rather than mocks.
  */
+/**
+ * `@Public()` because these fixtures exist to exercise the *envelope and
+ * validation* contract, not authentication. Routes are authenticated by default,
+ * so without this every assertion in the envelope and validation suites would
+ * come back `401` and read as an envelope regression rather than a missing
+ * annotation.
+ */
+@Public()
 @Controller('fixture')
 export class ContractFixtureController {
   @Get('object')

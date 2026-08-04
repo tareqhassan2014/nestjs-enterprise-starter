@@ -106,6 +106,105 @@ describe('logger options', () => {
     expect(JSON.parse(lines[1])).not.toHaveProperty('requestId');
   });
 
+  describe('actor attribution', () => {
+    it('adds the authenticated user id once the guard has resolved it', () => {
+      const { logger, lines } = capture();
+
+      RequestContext.run({ requestId: 'req-1' }, () => {
+        logger.info('before the guard');
+        RequestContext.setUserId('user-7');
+        logger.info('after the guard');
+      });
+
+      expect(JSON.parse(lines[0])).toMatchObject({ requestId: 'req-1' });
+      expect(JSON.parse(lines[0])).not.toHaveProperty('userId');
+
+      expect(JSON.parse(lines[1])).toMatchObject({
+        requestId: 'req-1',
+        userId: 'user-7',
+      });
+    });
+
+    it('joins pre- and post-authentication entries by request id', () => {
+      const { logger, lines } = capture();
+
+      RequestContext.run({ requestId: 'req-join' }, () => {
+        logger.info('early');
+        RequestContext.setUserId('user-9');
+        logger.info('late');
+      });
+
+      const [early, late] = lines.map(
+        (line) => JSON.parse(line) as Record<string, unknown>,
+      );
+
+      expect(early.requestId).toBe(late.requestId);
+      expect(late.userId).toBe('user-9');
+    });
+
+    it('carries no user id on an unauthenticated request', () => {
+      const { logger, lines } = capture();
+
+      RequestContext.run({ requestId: 'req-public' }, () => {
+        logger.info('public route');
+      });
+
+      expect(JSON.parse(lines[0])).not.toHaveProperty('userId');
+    });
+  });
+
+  describe('redaction of auth credentials', () => {
+    it('redacts session and provider tokens wherever they appear', () => {
+      const { logger, lines } = capture();
+
+      logger.info({
+        sessionToken: 'session-value-must-not-appear',
+        account: { refreshToken: 'refresh-value-must-not-appear' },
+        oauth: { provider: { clientSecret: 'client-secret-must-not-appear' } },
+      });
+
+      expect(lines[0]).not.toContain('session-value-must-not-appear');
+      expect(lines[0]).not.toContain('refresh-value-must-not-appear');
+      expect(lines[0]).not.toContain('client-secret-must-not-appear');
+    });
+
+    it('redacts two-factor material', () => {
+      const { logger, lines } = capture();
+
+      logger.info({
+        totpCode: '123456',
+        secret: 'provisioning-secret-must-not-appear',
+        twoFactor: { backupCodes: 'backup-codes-must-not-appear' },
+      });
+
+      expect(lines[0]).not.toContain('provisioning-secret-must-not-appear');
+      expect(lines[0]).not.toContain('backup-codes-must-not-appear');
+      expect(lines[0]).not.toContain('123456');
+    });
+
+    it('redacts verification and reset tokens, and submitted passwords', () => {
+      const { logger, lines } = capture();
+
+      logger.info({
+        token: 'verification-token-must-not-appear',
+        body: { newPassword: 'new-password-must-not-appear' },
+      });
+
+      expect(lines[0]).not.toContain('verification-token-must-not-appear');
+      expect(lines[0]).not.toContain('new-password-must-not-appear');
+    });
+
+    it('needs no cooperation from the call site', () => {
+      const { logger, lines } = capture();
+
+      // A provider that knows nothing about redaction still gets it.
+      logger.info({ arbitrary: { nested: { password: 'still-redacted' } } });
+
+      expect(lines[0]).not.toContain('still-redacted');
+      expect(lines[0]).toContain('[redacted]');
+    });
+  });
+
   it('honours the configured level threshold', () => {
     const { logger, lines } = capture({ level: 'warn' });
 
