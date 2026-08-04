@@ -1,4 +1,5 @@
 # Single-package workspace (pnpm v11+ config lives here).
 # Omit packages list → only the root package is included.
 allowBuilds:
+  '@swc/core': true
   unrs-resolver: true
