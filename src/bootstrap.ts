@@ -4,6 +4,7 @@ import type { NestExpressApplication } from '@nestjs/platform-express';
 import helmet from 'helmet';
 
 import { HEALTH_PATHS } from '@common/http/health-routes';
+import { METRICS_PATHS } from '@common/http/metrics-routes';
 import { securityConfig } from '@config/security.config';
 
 export const API_PREFIX = 'api';
@@ -100,8 +101,10 @@ export function configureApp(app: NestExpressApplication): void {
   });
 
   app.setGlobalPrefix(API_PREFIX, {
-    // Probe paths stay stable across API versions.
-    exclude: HEALTH_PATHS.map((path) => path.replace(/^\//, '')),
+    // Probe and scrape paths stay stable across API versions.
+    exclude: [...HEALTH_PATHS, ...METRICS_PATHS].map((path) =>
+      path.replace(/^\//, ''),
+    ),
   });
 
   app.enableVersioning({

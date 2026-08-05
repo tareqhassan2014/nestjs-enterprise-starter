@@ -16,6 +16,10 @@ export {
   stripeConfig,
   type StripeConfig,
 } from './stripe.config';
+export {
+  observabilityConfig,
+  type ObservabilityConfig,
+} from './observability.config';
 export { envFilePaths } from './env-files';
 export {
   type Env,

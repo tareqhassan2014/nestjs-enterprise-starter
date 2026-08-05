@@ -8,6 +8,7 @@ import {
   resolveRequestId,
 } from '@common/context/request-id';
 import { isHealthPath, requestPath } from '@common/http/health-routes';
+import { isMetricsPath } from '@common/http/metrics-routes';
 import type { LoggerConfig } from '@config/logger.config';
 
 /**
@@ -130,10 +131,12 @@ export function buildLoggerParams(config: LoggerConfig): Params {
         return typeof id === 'string' ? { requestId: id } : {};
       },
 
-      // Probe traffic would otherwise dominate log volume.
+      // Probe and scrape traffic would otherwise dominate log volume.
       autoLogging: {
-        ignore: (req: IncomingMessage): boolean =>
-          isHealthPath(requestPath(req)),
+        ignore: (req: IncomingMessage): boolean => {
+          const path = requestPath(req);
+          return isHealthPath(path) || isMetricsPath(path);
+        },
       },
 
       customSuccessMessage: (

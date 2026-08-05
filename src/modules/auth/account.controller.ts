@@ -8,6 +8,7 @@ import {
   Req,
   Res,
 } from '@nestjs/common';
+import { ApiTags } from '@nestjs/swagger';
 import { fromNodeHeaders } from 'better-auth/node';
 import type { Request, Response } from 'express';
 
@@ -44,11 +45,13 @@ interface SessionView {
  * First-party controllers, so these use the standard response envelope — unlike
  * the library-owned surface at `/api/auth/*`. Scoped to the *current* user
  * throughout: managing somebody else's roles or sessions belongs to the
- * admin-monitoring change, which has an HTTP surface to design for it.
+ * admin-monitoring module (`/api/v1/admin/...`), which has an HTTP surface for
+ * cross-user billing and usage inspection.
  *
  * `@StrictThrottle()` applies the tighter Nest ceilings — credential POSTs on
  * `/api/auth/*` remain Better Auth's responsibility.
  */
+@ApiTags('Account')
 @StrictThrottle()
 @Controller({ path: 'account', version: '1' })
 export class AccountController {

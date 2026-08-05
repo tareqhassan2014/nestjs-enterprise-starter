@@ -2,6 +2,7 @@
 # Omit packages list → only the root package is included.
 allowBuilds:
   '@prisma/engines': true
+  '@scarf/scarf': false
   '@swc/core': true
   prisma: true
   unrs-resolver: true

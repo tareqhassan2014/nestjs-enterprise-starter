@@ -88,13 +88,15 @@ Seeding establishes the access-control baseline (permission catalogue and baseli
 
 ### Requirement: Baseline schema
 
-The schema SHALL contain the models required by the platform foundation, authentication, authorization, plans, subscriptions, credits, and Stripe top-up linkage. Speculative models beyond that set (for example Connect accounts, Tax registrations, or invoice PDFs as domain tables) MUST NOT be introduced as required domain tables of this capability set.
+The schema SHALL contain the models required by the platform foundation, authentication, authorization, plans, subscriptions, credits, Stripe top-up linkage, and admin audit logging. Speculative models beyond that set (for example Connect accounts, Tax registrations, invoice PDFs as domain tables, or analytics warehouses) MUST NOT be introduced as required domain tables of this capability set.
 
 Identity and access-control models remain in scope: the authentication library's user, session, account, verification, and two-factor models, plus the role, permission, role-to-permission mapping, and user-to-role assignment tables. Their **model names** MUST match what the authentication library queries, while their table names MUST follow the repository's existing snake_case convention through explicit mapping.
 
 Plan and subscription models remain in scope: plan catalogue, per-plan entitlements, per-plan usage-limit matrices, and user subscriptions (including billing interval and lifecycle status).
 
 Credit and Stripe top-up models are in scope: per-user credit wallet, immutable credit ledger entries with unique idempotency keys, Stripe Customer linkage, and processed Stripe event (or equivalent) dedupe storage needed for idempotent webhooks.
+
+Admin audit models are in scope: an append-only admin audit log suitable for recording privileged admin mutations (actor, action, target, summary/reason, optional metadata, request correlation id, timestamp) with indexes adequate for filtered list queries.
 
 The schema MUST retain at least one model unrelated to identity and billing, so the seed hook and persistence tests exercise a real write-and-read round trip independently of authentication.
 
@@ -107,6 +109,11 @@ The schema MUST retain at least one model unrelated to identity and billing, so 
 
 - **WHEN** the schema is inspected
 - **THEN** it declares credit wallet, credit ledger, Stripe customer linkage, and Stripe processed-event (or equivalent webhook idempotency) models with uniqueness on wallet user, ledger idempotency key, and Stripe customer / event identifiers as designed
+
+#### Scenario: Admin audit model present
+
+- **WHEN** the schema is inspected
+- **THEN** it declares an append-only admin audit log model with actor, action, target, and timestamp fields suitable for admin list filters
 
 #### Scenario: Plan and subscription models present
 

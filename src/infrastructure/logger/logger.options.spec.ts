@@ -238,6 +238,7 @@ describe('logger options', () => {
     expect(autoLogging.ignore(req('/health/live'))).toBe(true);
     expect(autoLogging.ignore(req('/health/ready'))).toBe(true);
     expect(autoLogging.ignore(req('/health/ready?verbose=1'))).toBe(true);
+    expect(autoLogging.ignore(req('/metrics'))).toBe(true);
     expect(autoLogging.ignore(req('/api/v1/orders'))).toBe(false);
   });
 

@@ -5,7 +5,9 @@ import {
   HttpException,
   HttpStatus,
   Logger,
+  Optional,
 } from '@nestjs/common';
+import { EventEmitter2 } from '@nestjs/event-emitter';
 import type { Request, Response } from 'express';
 
 import { ApiException } from '@common/errors/api-exception';
@@ -15,6 +17,12 @@ import {
   type ErrorEnvelope,
   buildResponseMeta,
 } from '@common/http/response-envelope';
+import { PRINCIPAL_REQUEST_KEY } from '@modules/auth/auth.decorators';
+import type { AuthenticatedPrincipal } from '@modules/auth/auth.service';
+import {
+  type LimitExceededPayload,
+  OBS_LIMIT_EXCEEDED_EVENT,
+} from '@modules/metrics/observability.events';
 
 /**
  * Prisma's known-error class, duck-typed rather than imported.
@@ -81,6 +89,8 @@ interface ResolvedError {
 export class AllExceptionsFilter implements ExceptionFilter {
   private readonly logger = new Logger(AllExceptionsFilter.name);
 
+  constructor(@Optional() private readonly events?: EventEmitter2) {}
+
   catch(exception: unknown, host: ArgumentsHost): void {
     const ctx = host.switchToHttp();
     const request = ctx.getRequest<Request & { id?: unknown }>();
@@ -100,6 +110,7 @@ export class AllExceptionsFilter implements ExceptionFilter {
     }
 
     const resolved = this.resolve(exception);
+    this.observeLimitExceeded(resolved, request);
 
     if (resolved.status >= HttpStatus.INTERNAL_SERVER_ERROR) {
       // The original error is logged in full, with the correlation ID, and
@@ -129,6 +140,33 @@ export class AllExceptionsFilter implements ExceptionFilter {
     };
 
     response.status(resolved.status).json(body);
+  }
+
+  private observeLimitExceeded(
+    resolved: ResolvedError,
+    request: Request,
+  ): void {
+    if (
+      resolved.code !== ErrorCode.RATE_LIMITED &&
+      resolved.code !== ErrorCode.USAGE_LIMIT_EXCEEDED
+    ) {
+      return;
+    }
+
+    const principal = (
+      request as Request & { [PRINCIPAL_REQUEST_KEY]?: AuthenticatedPrincipal }
+    )[PRINCIPAL_REQUEST_KEY];
+
+    const payload: LimitExceededPayload = {
+      code: resolved.code,
+      subject: principal?.id ?? `ip:${request.ip ?? 'unknown'}`,
+      route:
+        (request as Request & { route?: { path?: string } }).route?.path ??
+        requestPath(request) ??
+        'unknown',
+    };
+
+    this.events?.emit(OBS_LIMIT_EXCEEDED_EVENT, payload);
   }
 
   private resolve(exception: unknown): ResolvedError {

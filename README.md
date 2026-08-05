@@ -23,12 +23,13 @@ Fork it and build features on top — the parts every service needs are decided 
 | Usage limits | Daily/weekly Redis counters per user (and optional org) + feature; ceilings from plan matrices |
 | Plans & subscriptions | Lite / Pro / Enterprise catalogue, monthly/yearly intervals, entitlement gate, seeded limit matrices |
 | Credits & Stripe top-up | Per-user wallet + immutable ledger, `@CostsCredits` gate, Checkout Sessions for credit packs |
+| Admin monitoring | `/api/v1/admin` usage dashboards, subscription/credit inspection & adjust, audit log, Prometheus `/metrics`, Swagger Admin tags |
 | Transport security | Helmet with an API-appropriate CSP, CORS allowlist, hardened session cookies |
 | Mail | Provider-agnostic port with a recording dev adapter and an SMTP adapter |
 | Local stack | Docker Compose: app + Postgres + Redis + Mailpit, with healthchecks |
 | CI | GitHub Actions: lint, typecheck, unit, integration, build, boot smoke test, image build |
 
-Not included by design: Stripe **Subscription** Billing sync (plans stay app-owned), Connect / Tax / Customer Portal, and admin monitoring APIs.
+Not included by design: Stripe **Subscription** Billing sync (plans stay app-owned), Connect / Tax / Customer Portal, admin SPA / Grafana stack.
 
 ## Requirements
 
@@ -244,6 +245,12 @@ First-party endpoints, inside the envelope:
 | Start credit pack Checkout | `POST /api/v1/billing/checkout` `{ "pack": "starter" }` |
 | Demo paid route (`@CostsCredits`) | `POST /api/v1/billing/demo/paid` |
 | Stripe webhook (no envelope) | `POST /api/v1/billing/webhook` |
+| Admin usage pressure / top 429s | `GET /api/v1/admin/usage/pressure`, `…/top-429` |
+| Admin user usage / subscription / credits | `GET /api/v1/admin/users/:userId/…` |
+| Admin credit grant / adjust | `POST /api/v1/admin/users/:userId/credits/grant\|adjust` |
+| Admin audit list | `GET /api/v1/admin/audit` |
+| Prometheus scrape (no envelope) | `GET /metrics` |
+| OpenAPI UI | `GET /docs` (when enabled) |
 | List own sessions | `GET /api/v1/account/sessions` |
 | Revoke one own session | `DELETE /api/v1/account/sessions/:id` |
 | Revoke all but current | `POST /api/v1/account/sessions/revoke-others` |
@@ -374,6 +381,26 @@ Pay-as-you-go credits sit **after** usage limits in the guard chain.
 Optional `CREDITS_LOW_BALANCE_THRESHOLD` emits a `credits.low_balance` event after a spend that crosses it — no mail/queue wiring in the starter.
 
 **Not included:** Connect, Tax, Customer Portal, Stripe PaymentIntent refunds as product refunds, org wallets, or driving subscription `past_due` / cancel from invoices.
+
+## Admin monitoring
+
+Operator HTTP surface under `/api/v1/admin`, gated by typed permissions (not role-only checks):
+
+| Permission | Surface |
+| --- | --- |
+| `admin:metrics:read` | Usage pressure, top 429s, per-user daily/weekly snapshots |
+| `admin:subscriptions:read` | Another user's effective plan / subscription |
+| `admin:credits:read` | Another user's wallet + capped ledger |
+| `admin:credits:adjust` | Grant / adjust credits (idempotent; requires `reason`) |
+| `admin:audit:read` | Append-only admin action audit list |
+
+Baseline `admin` receives every permission; `user` does not. After seeding new keys, run `pnpm db:seed` and call `PermissionResolver.invalidate()` after assignment changes.
+
+**Metrics:** `GET /metrics` is Prometheus text, outside `/api` and outside the success envelope (like health). Enable with `METRICS_ENABLED=true`. Set `METRICS_BEARER_TOKEN` for scrape auth, or isolate the path on the network when the token is blank. Label cardinality stays low — route templates, never user ids.
+
+**OpenAPI:** Swagger UI at `/docs` when `SWAGGER_ENABLED` is true (defaults on in development). Admin controllers are tagged `Admin`. Documented envelope exceptions: `/api/auth/*`, `/health/*`, `/metrics`, Stripe webhook.
+
+**Not included:** admin SPA, Grafana/Alertmanager, session impersonation, or Stripe Billing sync from admin actions (ledger adjust is product-side only).
 
 ## Two-factor authentication
 

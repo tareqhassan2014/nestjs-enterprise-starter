@@ -3,6 +3,7 @@ import {
   Inject,
   Injectable,
   Logger,
+  Optional,
 } from '@nestjs/common';
 import type { ConfigType } from '@nestjs/config';
 import { EventEmitter2 } from '@nestjs/event-emitter';
@@ -12,6 +13,7 @@ import { ApiException } from '@common/errors/api-exception';
 import { ErrorCode } from '@common/errors/error-code';
 import { creditsConfig } from '@config/credits.config';
 import { PrismaService } from '@infrastructure/prisma/prisma.service';
+import { MetricsService } from '@modules/metrics/metrics.service';
 
 export const CREDITS_LOW_BALANCE_EVENT = 'credits.low_balance';
 
@@ -38,6 +40,7 @@ export class CreditService {
     private readonly events: EventEmitter2,
     @Inject(creditsConfig.KEY)
     private readonly credits: ConfigType<typeof creditsConfig>,
+    @Optional() private readonly metrics?: MetricsService,
   ) {}
 
   async getBalance(userId: string): Promise<number> {
@@ -208,6 +211,10 @@ export class CreditService {
 
       return { entry, balance: updated.balance, replayed: false };
     });
+
+    if (!result.replayed) {
+      this.metrics?.recordCreditMutation(params.type);
+    }
 
     if (
       !result.replayed &&

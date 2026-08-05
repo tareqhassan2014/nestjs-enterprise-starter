@@ -70,6 +70,7 @@ model User {
   creditWallet  CreditWallet?
   creditLedger  CreditLedgerEntry[]
   stripeCustomer StripeCustomer?
+  adminAuditLogs AdminAuditLog[] @relation("AdminAuditActor")
 
   @@map("users")
 }
@@ -410,4 +411,30 @@ model StripeProcessedEvent {
   processedAt DateTime @default(now())
 
   @@map("stripe_processed_events")
+}
+
+// ---------------------------------------------------------------------------
+// Admin audit — append-only privileged mutation trail
+// ---------------------------------------------------------------------------
+
+/// Operator action record. Application APIs never update or delete rows.
+model AdminAuditLog {
+  id String @id @default(cuid())
+
+  actorUserId String
+  action      String
+  targetType  String?
+  targetId    String?
+  summary     String
+  metadata    Json?
+  requestId   String?
+
+  createdAt DateTime @default(now())
+
+  actor User @relation("AdminAuditActor", fields: [actorUserId], references: [id], onDelete: Cascade)
+
+  @@index([actorUserId, createdAt])
+  @@index([action, createdAt])
+  @@index([targetType, targetId, createdAt])
+  @@map("admin_audit_log")
 }

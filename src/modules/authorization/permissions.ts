@@ -32,9 +32,12 @@ export const PERMISSIONS = [
   'role:assign',
   'role:manage',
 
-  // Operational surfaces. The admin-monitoring change will consume these.
+  // Operational / admin monitoring surfaces.
   'admin:metrics:read',
   'admin:audit:read',
+  'admin:subscriptions:read',
+  'admin:credits:read',
+  'admin:credits:adjust',
 ] as const;
 
 /** Every valid permission key. Annotations are typed against this. */
@@ -52,8 +55,11 @@ export const PERMISSION_DESCRIPTIONS: Record<Permission, string> = {
   'role:read': 'Read roles and their permissions',
   'role:assign': 'Grant and revoke roles for a user',
   'role:manage': 'Create, edit, and delete roles and their permission mappings',
-  'admin:metrics:read': 'Read operational metrics',
-  'admin:audit:read': 'Read audit records',
+  'admin:metrics:read': 'Read operational metrics and usage dashboards',
+  'admin:audit:read': 'Read admin audit records',
+  'admin:subscriptions:read': "Read another user's subscription and effective plan",
+  'admin:credits:read': "Read another user's credit wallet and ledger",
+  'admin:credits:adjust': 'Grant or adjust credits for another user',
 };
 
 /** Role names the seed guarantees exist. */

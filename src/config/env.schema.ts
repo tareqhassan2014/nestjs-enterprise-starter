@@ -297,6 +297,39 @@ const envObjectSchema = z.object({
   STRIPE_CANCEL_URL: optionalString,
 
   // ---------------------------------------------------------------------------
+  // Admin monitoring, metrics scrape, OpenAPI
+  // ---------------------------------------------------------------------------
+
+  /** Expose Prometheus text at `/metrics`. Off by default. */
+  METRICS_ENABLED: booleanFlag(false),
+  /**
+   * Optional scrape token. When set (and metrics enabled), scrapers must send
+   * `Authorization: Bearer <token>`. When unset, `/metrics` is open — isolate
+   * it at the network layer in production.
+   */
+  METRICS_BEARER_TOKEN: optionalString,
+  /**
+   * Serve Swagger UI at `/docs`. When unset, defaults to on in development and
+   * off otherwise (see observability config).
+   */
+  SWAGGER_ENABLED: z.preprocess(
+    blankAsAbsent,
+    z
+      .union([z.boolean(), z.enum(['true', 'false', '1', '0'])])
+      .optional()
+      .transform((value) => {
+        if (value === undefined) {
+          return undefined;
+        }
+        return typeof value === 'boolean'
+          ? value
+          : value === 'true' || value === '1';
+      }),
+  ),
+  /** Default top-N size for admin 429 leaderboards (hard-capped in code). */
+  ADMIN_USAGE_TOP_N: z.coerce.number().int().positive().max(100).default(20),
+
+  // ---------------------------------------------------------------------------
   // Transport security
   // ---------------------------------------------------------------------------
 

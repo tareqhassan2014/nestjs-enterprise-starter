@@ -8,7 +8,7 @@ import { usageLimitsConfig } from '@config/usage-limits.config';
 import { REDIS_CLIENT } from '@infrastructure/redis/redis.constants';
 import { PlanResolutionService } from '@modules/plans/plan-resolution.service';
 
-import { assertUsageFeature, type UsageFeature } from './usage-features';
+import { assertUsageFeature, type UsageFeature, USAGE_FEATURE_LIST } from './usage-features';
 
 export type UsagePeriod = 'day' | 'week';
 
@@ -138,6 +138,30 @@ export class UsageLimitsService {
     const override = this.config.features[feature];
     const source = override ?? this.config.default;
     return period === 'day' ? source.daily : source.weekly;
+  }
+
+  /**
+   * Admin/ops snapshot of daily and weekly counters for a user across one or
+   * all catalogue features. Read-only MGET of existing counters.
+   */
+  async snapshotsForUser(
+    userId: string,
+    feature?: UsageFeature,
+  ): Promise<UsageSnapshot[]> {
+    if (feature !== undefined) {
+      assertUsageFeature(feature);
+    }
+
+    const catalogue = feature ? [feature] : USAGE_FEATURE_LIST;
+    const subject: UsageSubject = { userId };
+    const out: UsageSnapshot[] = [];
+
+    for (const item of catalogue) {
+      out.push(await this.check(subject, item, 'day'));
+      out.push(await this.check(subject, item, 'week'));
+    }
+
+    return out;
   }
 
   async ceilingFor(

@@ -8,6 +8,8 @@ export const USAGE_FEATURES = {
 
 export type UsageFeature = (typeof USAGE_FEATURES)[keyof typeof USAGE_FEATURES];
 
+export const USAGE_FEATURE_LIST = Object.values(USAGE_FEATURES) as UsageFeature[];
+
 const FEATURE_SET = new Set<string>(Object.values(USAGE_FEATURES));
 
 export function assertUsageFeature(
