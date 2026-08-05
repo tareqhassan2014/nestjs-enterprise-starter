@@ -385,6 +385,59 @@ const envObjectSchema = z.object({
   SMTP_USER: optionalString,
   SMTP_PASSWORD: optionalString,
   SMTP_SECURE: booleanFlag(false),
+
+  // ---------------------------------------------------------------------------
+  // BullMQ job queues (share REDIS_URL; isolated by key prefix)
+  // ---------------------------------------------------------------------------
+
+  BULLMQ_PREFIX: z.string().min(1).default('bull'),
+  BULLMQ_EMAIL_CONCURRENCY: z.coerce.number().int().positive().default(5),
+  BULLMQ_WEBHOOK_CONCURRENCY: z.coerce.number().int().positive().default(5),
+  BULLMQ_USAGE_ROLLUP_CONCURRENCY: z.coerce.number().int().positive().default(1),
+  BULLMQ_DEFAULT_ATTEMPTS: z.coerce.number().int().positive().default(5),
+  BULLMQ_BACKOFF_MS: z.coerce.number().int().positive().default(2000),
+  /** When true, low-balance events enqueue email instead of only emitting. */
+  EMAIL_LOW_BALANCE_ENABLED: booleanFlag(false),
+  /** Interval (ms) between usage rollup enqueue ticks; 0 disables the scheduler. */
+  USAGE_ROLLUP_INTERVAL_MS: z.coerce.number().int().nonnegative().default(0),
+
+  // ---------------------------------------------------------------------------
+  // Object storage (local filesystem or S3-compatible)
+  // ---------------------------------------------------------------------------
+
+  STORAGE_DRIVER: z.enum(['local', 's3']).default('local'),
+  STORAGE_LOCAL_ROOT: z.string().min(1).default('./.storage'),
+  STORAGE_S3_BUCKET: optionalString,
+  STORAGE_S3_REGION: optionalString,
+  STORAGE_S3_ACCESS_KEY_ID: optionalString,
+  STORAGE_S3_SECRET_ACCESS_KEY: optionalString,
+  STORAGE_S3_ENDPOINT: optionalString,
+  STORAGE_S3_FORCE_PATH_STYLE: booleanFlag(false),
+
+  // ---------------------------------------------------------------------------
+  // Feature flags (env defaults; DB overrides win)
+  // ---------------------------------------------------------------------------
+
+  FEATURE_FLAG_EMAIL_LOW_BALANCE: booleanFlag(false),
+  FEATURE_FLAG_ORG_BILLING: booleanFlag(true),
+
+  // ---------------------------------------------------------------------------
+  // HTTP idempotency (opt-in POSTs)
+  // ---------------------------------------------------------------------------
+
+  IDEMPOTENCY_TTL_SECONDS: z.coerce
+    .number()
+    .int()
+    .positive()
+    .default(60 * 60 * 24),
+  IDEMPOTENCY_KEY_MAX_LENGTH: z.coerce.number().int().positive().default(128),
+
+  // ---------------------------------------------------------------------------
+  // Graceful shutdown + org binding
+  // ---------------------------------------------------------------------------
+
+  SHUTDOWN_DRAIN_MS: z.coerce.number().int().positive().default(15_000),
+  ORGANIZATION_HEADER: z.string().min(1).default('x-organization-id'),
 });
 
 type EnvShape = z.infer<typeof envObjectSchema>;
@@ -545,6 +598,33 @@ export const envSchema = envObjectSchema.superRefine((env, ctx) => {
       message:
         'must not be "log" in production — that transport records messages instead of delivering them, so verification and reset mail would silently never arrive. Set MAIL_TRANSPORT=smtp.',
     });
+  }
+
+  if (env.STORAGE_DRIVER === 'local' && env.NODE_ENV === 'production') {
+    ctx.addIssue({
+      code: 'custom',
+      path: ['STORAGE_DRIVER'],
+      message:
+        'must not be "local" in production — local disk is not durable across instances. Set STORAGE_DRIVER=s3 with a complete S3 group.',
+    });
+  }
+
+  if (env.STORAGE_DRIVER === 's3') {
+    for (const name of [
+      'STORAGE_S3_BUCKET',
+      'STORAGE_S3_REGION',
+      'STORAGE_S3_ACCESS_KEY_ID',
+      'STORAGE_S3_SECRET_ACCESS_KEY',
+    ] as const) {
+      if (env[name] === undefined) {
+        ctx.addIssue({
+          code: 'custom',
+          path: [name],
+          message:
+            'is required because STORAGE_DRIVER is "s3" — supply bucket, region, and credentials (or none of the S3 group with STORAGE_DRIVER=local)',
+        });
+      }
+    }
   }
 
   // Shipping the example placeholder would mean signing every session with a

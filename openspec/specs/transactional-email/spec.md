@@ -6,6 +6,8 @@ Outbound mail behind a provider-agnostic port: application code describes a mess
 
 A development adapter records messages instead of delivering them, so tests can read a verification link with no SMTP server running. That adapter cannot be selected in production: a transport that silently discards mail would make every registration appear to succeed while leaving the accounts unreachable, so boot fails instead. Dispatch failures surface rather than disappear.
 
+Non-critical sends may also be dispatched through the `job-queues` `email` queue so they do not block the request thread on an SMTP round-trip, while auth-critical paths keep their fail-visible synchronous behaviour.
+
 ## Requirements
 
 ### Requirement: Outbound mail is consumed through a provider-agnostic port
@@ -133,3 +135,19 @@ The development adapter MAY record full contents in memory for tests, but MUST N
 
 - **WHEN** the development adapter records a message containing a reset token
 - **THEN** the token is readable from the in-memory record and absent from the log stream
+
+### Requirement: Queue-backed dispatch for non-blocking mail
+
+The system SHALL allow application code to enqueue outbound mail through the job-queues `email` queue while still describing messages only via the provider-agnostic mail port (payload fields remain port-shaped). Workers MUST invoke the configured mail adapter; callers MUST NOT import BullMQ outside the queues/mail integration module.
+
+Auth-critical paths that require fail-visible synchronous send MAY continue to call the port directly. Non-critical notifications (including low-balance when wired) MUST enqueue rather than block the request on SMTP.
+
+#### Scenario: Enqueued message is delivered by worker
+
+- **WHEN** a low-balance or other non-critical path enqueues an email job
+- **THEN** a worker processes the job by calling the mail port and the originating request is not blocked on SMTP round-trip
+
+#### Scenario: Sync auth path still uses the port
+
+- **WHEN** registration verification mail is sent on the synchronous path
+- **THEN** it still goes through the mail port and failures surface to the caller per existing delivery-failure requirements

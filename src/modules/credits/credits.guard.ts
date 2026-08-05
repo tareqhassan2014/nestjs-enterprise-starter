@@ -16,6 +16,8 @@ import {
   PRINCIPAL_REQUEST_KEY,
 } from '@modules/auth/auth.decorators';
 import type { AuthenticatedPrincipal } from '@modules/auth/auth.service';
+import type { BillingSubject } from '@modules/organizations/billing-subject';
+import { BillingSubjectResolver } from '@modules/organizations/billing-subject.resolver';
 
 import { type CreditFeature, creditCost } from './credit-costs';
 import { COSTS_CREDITS_KEY } from './credit.decorators';
@@ -25,7 +27,7 @@ import { CreditService } from './credit.service';
 export const CREDITS_SPEND_REQUEST_KEY = 'creditsSpend';
 
 export interface CreditsSpendMarker {
-  userId: string;
+  subject: BillingSubject;
   feature: CreditFeature;
   amount: number;
   spendIdempotencyKey: string;
@@ -44,6 +46,7 @@ export class CreditsGuard implements CanActivate {
   constructor(
     private readonly reflector: Reflector,
     private readonly credits: CreditService,
+    private readonly billingSubjects: BillingSubjectResolver,
   ) {}
 
   async canActivate(context: ExecutionContext): Promise<boolean> {
@@ -60,9 +63,10 @@ export class CreditsGuard implements CanActivate {
       return true;
     }
 
-    const feature = this.reflector.getAllAndOverride<
-      CreditFeature | undefined
-    >(COSTS_CREDITS_KEY, [context.getHandler(), context.getClass()]);
+    const feature = this.reflector.getAllAndOverride<CreditFeature | undefined>(
+      COSTS_CREDITS_KEY,
+      [context.getHandler(), context.getClass()],
+    );
 
     if (!feature) {
       return true;
@@ -70,6 +74,7 @@ export class CreditsGuard implements CanActivate {
 
     const request = context.switchToHttp().getRequest<Request>();
     const principal = this.principalOf(request);
+    const subject = await this.billingSubjects.resolve(principal.id);
     const amount = creditCost(feature);
     const requestId = RequestContext.getRequestId() ?? 'unknown';
     const spendIdempotencyKey = `spend:${requestId}:${feature}`;
@@ -77,7 +82,7 @@ export class CreditsGuard implements CanActivate {
 
     try {
       await this.credits.spend({
-        userId: principal.id,
+        subject,
         amount,
         idempotencyKey: spendIdempotencyKey,
         feature,
@@ -90,7 +95,7 @@ export class CreditsGuard implements CanActivate {
         this.logger.warn({
           msg: 'Insufficient credits',
           requestId,
-          userId: principal.id,
+          subject,
           feature,
           amount,
         });
@@ -102,7 +107,7 @@ export class CreditsGuard implements CanActivate {
       [CREDITS_SPEND_REQUEST_KEY]?: CreditsSpendMarker;
     };
     carrier[CREDITS_SPEND_REQUEST_KEY] = {
-      userId: principal.id,
+      subject,
       feature,
       amount,
       spendIdempotencyKey,

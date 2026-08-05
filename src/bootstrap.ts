@@ -98,7 +98,12 @@ export function configureApp(app: NestExpressApplication): void {
     origin: security.corsOrigins,
     credentials: true,
     methods: ['GET', 'HEAD', 'PUT', 'PATCH', 'POST', 'DELETE', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'Authorization'],
+    allowedHeaders: [
+      'Content-Type',
+      'Authorization',
+      'Idempotency-Key',
+      'X-Organization-Id',
+    ],
     maxAge: 600,
   });
 

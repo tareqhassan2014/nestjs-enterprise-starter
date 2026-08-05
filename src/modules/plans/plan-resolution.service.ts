@@ -6,6 +6,10 @@ import {
 } from '@/generated/prisma/client';
 import { PrismaService } from '@infrastructure/prisma/prisma.service';
 import {
+  type BillingSubject,
+  userSubject,
+} from '@modules/organizations/billing-subject';
+import {
   assertUsageFeature,
   type UsageFeature,
 } from '@modules/usage-limits/usage-features';
@@ -117,9 +121,23 @@ export class PlanResolutionService implements OnModuleInit {
     }
   }
 
-  async resolve(userId: string, now: Date = new Date()): Promise<EffectivePlan> {
+  /**
+   * Resolves the effective plan for a `BillingSubject`, or — for every
+   * caller written before organizations existed — a bare `userId` string.
+   * An organization subject resolves against its own subscriptions rather
+   * than any member's; see `BillingSubjectResolver` and design.md decision 4.
+   */
+  async resolve(
+    subject: BillingSubject | string,
+    now: Date = new Date(),
+  ): Promise<EffectivePlan> {
+    const resolved =
+      typeof subject === 'string' ? userSubject(subject) : subject;
     const subscriptions = await this.prisma.subscription.findMany({
-      where: { userId },
+      where:
+        resolved.type === 'organization'
+          ? { organizationId: resolved.organizationId }
+          : { userId: resolved.userId },
       orderBy: { updatedAt: 'desc' },
     });
 
@@ -184,7 +202,9 @@ export class PlanResolutionService implements OnModuleInit {
     }
 
     if (status === 'canceled') {
-      return currentPeriodEnd !== null && currentPeriodEnd.getTime() > now.getTime();
+      return (
+        currentPeriodEnd !== null && currentPeriodEnd.getTime() > now.getTime()
+      );
     }
 
     return false;

@@ -14,11 +14,20 @@ import { ErrorCode } from '@common/errors/error-code';
 import { creditsConfig } from '@config/credits.config';
 import { PrismaService } from '@infrastructure/prisma/prisma.service';
 import { MetricsService } from '@modules/metrics/metrics.service';
+import {
+  type BillingSubject,
+  userSubject,
+} from '@modules/organizations/billing-subject';
 
 export const CREDITS_LOW_BALANCE_EVENT = 'credits.low_balance';
 
 export interface CreditsLowBalancePayload {
-  userId: string;
+  subject: BillingSubject;
+  /**
+   * Present only for user subjects; mirrors `subject.userId`. Kept for
+   * listeners written before organizations existed — prefer `subject`.
+   */
+  userId?: string;
   balance: number;
   threshold: number;
 }
@@ -30,6 +39,16 @@ export interface CreditMutationResult {
 }
 
 type Tx = Prisma.TransactionClient;
+
+/**
+ * Accepted on every mutation/read method: a resolved `BillingSubject`, or —
+ * for every caller written before organizations existed — a bare `userId`.
+ * Exactly one must be supplied; `resolveSubject` throws otherwise.
+ */
+interface SubjectInput {
+  subject?: BillingSubject;
+  userId?: string;
+}
 
 @Injectable()
 export class CreditService {
@@ -43,34 +62,37 @@ export class CreditService {
     @Optional() private readonly metrics?: MetricsService,
   ) {}
 
-  async getBalance(userId: string): Promise<number> {
+  async getBalance(subject: BillingSubject | string): Promise<number> {
+    const resolved = this.toSubject(subject);
     const wallet = await this.prisma.creditWallet.findUnique({
-      where: { userId },
+      where: this.ownerWhere(resolved),
     });
     return wallet?.balance ?? 0;
   }
 
   async listLedger(
-    userId: string,
+    subject: BillingSubject | string,
     limit = 20,
   ): Promise<CreditLedgerEntry[]> {
+    const resolved = this.toSubject(subject);
     const take = Math.min(Math.max(limit, 1), 100);
     return this.prisma.creditLedgerEntry.findMany({
-      where: { userId },
+      where: this.ownerData(resolved),
       orderBy: { createdAt: 'desc' },
       take,
     });
   }
 
-  async grant(params: {
-    userId: string;
-    amount: number;
-    idempotencyKey: string;
-    metadata?: Prisma.InputJsonValue;
-  }): Promise<CreditMutationResult> {
+  async grant(
+    params: SubjectInput & {
+      amount: number;
+      idempotencyKey: string;
+      metadata?: Prisma.InputJsonValue;
+    },
+  ): Promise<CreditMutationResult> {
     this.assertPositiveAmount(params.amount);
     return this.apply({
-      userId: params.userId,
+      subject: this.resolveSubject(params),
       type: 'grant',
       amount: params.amount,
       delta: params.amount,
@@ -79,16 +101,17 @@ export class CreditService {
     });
   }
 
-  async spend(params: {
-    userId: string;
-    amount: number;
-    idempotencyKey: string;
-    feature?: string;
-    metadata?: Prisma.InputJsonValue;
-  }): Promise<CreditMutationResult> {
+  async spend(
+    params: SubjectInput & {
+      amount: number;
+      idempotencyKey: string;
+      feature?: string;
+      metadata?: Prisma.InputJsonValue;
+    },
+  ): Promise<CreditMutationResult> {
     this.assertPositiveAmount(params.amount);
     return this.apply({
-      userId: params.userId,
+      subject: this.resolveSubject(params),
       type: 'spend',
       amount: params.amount,
       delta: -params.amount,
@@ -99,16 +122,17 @@ export class CreditService {
     });
   }
 
-  async refund(params: {
-    userId: string;
-    amount: number;
-    idempotencyKey: string;
-    feature?: string;
-    metadata?: Prisma.InputJsonValue;
-  }): Promise<CreditMutationResult> {
+  async refund(
+    params: SubjectInput & {
+      amount: number;
+      idempotencyKey: string;
+      feature?: string;
+      metadata?: Prisma.InputJsonValue;
+    },
+  ): Promise<CreditMutationResult> {
     this.assertPositiveAmount(params.amount);
     return this.apply({
-      userId: params.userId,
+      subject: this.resolveSubject(params),
       type: 'refund',
       amount: params.amount,
       delta: params.amount,
@@ -122,12 +146,13 @@ export class CreditService {
    * Signed delta adjust. Positive credits the wallet; negative debits it.
    * Stored amount is absolute; type is always `adjust`.
    */
-  async adjust(params: {
-    userId: string;
-    delta: number;
-    idempotencyKey: string;
-    metadata?: Prisma.InputJsonValue;
-  }): Promise<CreditMutationResult> {
+  async adjust(
+    params: SubjectInput & {
+      delta: number;
+      idempotencyKey: string;
+      metadata?: Prisma.InputJsonValue;
+    },
+  ): Promise<CreditMutationResult> {
     if (!Number.isInteger(params.delta) || params.delta === 0) {
       throw new ApiException(
         HttpStatus.BAD_REQUEST,
@@ -137,7 +162,7 @@ export class CreditService {
     }
 
     return this.apply({
-      userId: params.userId,
+      subject: this.resolveSubject(params),
       type: 'adjust',
       amount: Math.abs(params.delta),
       delta: params.delta,
@@ -148,7 +173,7 @@ export class CreditService {
   }
 
   private async apply(params: {
-    userId: string;
+    subject: BillingSubject;
     type: 'grant' | 'spend' | 'refund' | 'adjust';
     amount: number;
     delta: number;
@@ -172,10 +197,10 @@ export class CreditService {
       }
 
       // Create first so FOR UPDATE has a row; then lock for concurrent spends.
-      await this.ensureWallet(tx, params.userId);
-      await this.lockWallet(tx, params.userId);
+      await this.ensureWallet(tx, params.subject);
+      await this.lockWallet(tx, params.subject);
       const wallet = await tx.creditWallet.findUniqueOrThrow({
-        where: { userId: params.userId },
+        where: this.ownerWhere(params.subject),
       });
       const nextBalance = wallet.balance + params.delta;
 
@@ -193,13 +218,13 @@ export class CreditService {
       }
 
       const updated = await tx.creditWallet.update({
-        where: { userId: params.userId },
+        where: { id: wallet.id },
         data: { balance: nextBalance },
       });
 
       const entry = await tx.creditLedgerEntry.create({
         data: {
-          userId: params.userId,
+          ...this.ownerData(params.subject),
           type: params.type,
           amount: params.amount,
           balanceAfter: updated.balance,
@@ -221,7 +246,7 @@ export class CreditService {
       params.type === 'spend' &&
       this.shouldEmitLowBalance(result.balance)
     ) {
-      this.emitLowBalance(params.userId, result.balance);
+      this.emitLowBalance(params.subject, result.balance);
     }
 
     return result;
@@ -232,37 +257,75 @@ export class CreditService {
     return threshold !== undefined && balance <= threshold;
   }
 
-  private emitLowBalance(userId: string, balance: number): void {
+  private emitLowBalance(subject: BillingSubject, balance: number): void {
     const threshold = this.credits.lowBalanceThreshold!;
     const payload: CreditsLowBalancePayload = {
-      userId,
+      subject,
+      userId: subject.type === 'user' ? subject.userId : undefined,
       balance,
       threshold,
     };
 
     this.logger.warn({
       msg: 'Credit balance at or below threshold',
-      ...payload,
+      subject,
+      balance,
+      threshold,
     });
 
     this.events.emit(CREDITS_LOW_BALANCE_EVENT, payload);
   }
 
-  private async lockWallet(tx: Tx, userId: string): Promise<void> {
-    await tx.$executeRaw`
-      SELECT 1 FROM credit_wallets WHERE "userId" = ${userId} FOR UPDATE
-    `;
+  private async lockWallet(tx: Tx, subject: BillingSubject): Promise<void> {
+    if (subject.type === 'organization') {
+      await tx.$executeRaw`
+        SELECT 1 FROM credit_wallets WHERE "organizationId" = ${subject.organizationId} FOR UPDATE
+      `;
+    } else {
+      await tx.$executeRaw`
+        SELECT 1 FROM credit_wallets WHERE "userId" = ${subject.userId} FOR UPDATE
+      `;
+    }
   }
 
-  private async ensureWallet(
-    tx: Tx,
-    userId: string,
-  ): Promise<{ userId: string; balance: number }> {
-    return tx.creditWallet.upsert({
-      where: { userId },
-      create: { userId, balance: 0 },
+  private async ensureWallet(tx: Tx, subject: BillingSubject): Promise<void> {
+    await tx.creditWallet.upsert({
+      where: this.ownerWhere(subject),
+      create: { ...this.ownerData(subject), balance: 0 },
       update: {},
     });
+  }
+
+  private resolveSubject(params: SubjectInput): BillingSubject {
+    if (params.subject) {
+      return params.subject;
+    }
+    if (params.userId) {
+      return userSubject(params.userId);
+    }
+    throw new ApiException(
+      HttpStatus.BAD_REQUEST,
+      ErrorCode.BAD_REQUEST,
+      'A billing subject (userId or organizationId) is required.',
+    );
+  }
+
+  private toSubject(subject: BillingSubject | string): BillingSubject {
+    return typeof subject === 'string' ? userSubject(subject) : subject;
+  }
+
+  private ownerWhere(
+    subject: BillingSubject,
+  ): { userId: string } | { organizationId: string } {
+    return subject.type === 'organization'
+      ? { organizationId: subject.organizationId }
+      : { userId: subject.userId };
+  }
+
+  private ownerData(
+    subject: BillingSubject,
+  ): { userId: string } | { organizationId: string } {
+    return this.ownerWhere(subject);
   }
 
   private assertPositiveAmount(amount: number): void {
@@ -280,12 +343,17 @@ export class CreditService {
     params: {
       type: string;
       amount: number;
-      userId: string;
+      subject: BillingSubject;
       feature?: string;
     },
   ): void {
+    const ownerMismatch =
+      params.subject.type === 'organization'
+        ? existing.organizationId !== params.subject.organizationId
+        : existing.userId !== params.subject.userId;
+
     if (
-      existing.userId !== params.userId ||
+      ownerMismatch ||
       existing.type !== params.type ||
       existing.amount !== params.amount ||
       (params.feature !== undefined && existing.feature !== params.feature)

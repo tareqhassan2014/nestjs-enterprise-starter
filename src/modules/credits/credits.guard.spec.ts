@@ -10,12 +10,12 @@ import {
   PRINCIPAL_REQUEST_KEY,
 } from '@modules/auth/auth.decorators';
 
+import { userSubject } from '@modules/organizations/billing-subject';
+import type { BillingSubjectResolver } from '@modules/organizations/billing-subject.resolver';
+
 import { COSTS_CREDITS_KEY } from './credit.decorators';
 import { CreditsRefundInterceptor } from './credits-refund.interceptor';
-import {
-  CREDITS_SPEND_REQUEST_KEY,
-  CreditsGuard,
-} from './credits.guard';
+import { CREDITS_SPEND_REQUEST_KEY, CreditsGuard } from './credits.guard';
 import type { CreditService } from './credit.service';
 
 function contextFor(request: Record<string, unknown>): ExecutionContext {
@@ -33,7 +33,11 @@ describe('CreditsGuard', () => {
     public?: boolean;
     principal?: { id: string } | null;
     spend?: jest.Mock;
-  }): { guard: CreditsGuard; spend: jest.Mock; request: Record<string, unknown> } {
+  }): {
+    guard: CreditsGuard;
+    spend: jest.Mock;
+    request: Record<string, unknown>;
+  } {
     const reflector = new Reflector();
     jest.spyOn(reflector, 'getAllAndOverride').mockImplementation((key) => {
       if (key === IS_PUBLIC_KEY) {
@@ -45,9 +49,13 @@ describe('CreditsGuard', () => {
       return undefined;
     });
 
-    const spend = overrides.spend ?? jest.fn().mockResolvedValue({ balance: 0 });
+    const spend =
+      overrides.spend ?? jest.fn().mockResolvedValue({ balance: 0 });
     const credits = { spend } as unknown as CreditService;
-    const guard = new CreditsGuard(reflector, credits);
+    const billingSubjects = {
+      resolve: jest.fn((userId: string) => userSubject(userId)),
+    } as unknown as BillingSubjectResolver;
+    const guard = new CreditsGuard(reflector, credits, billingSubjects);
 
     const request: Record<string, unknown> = {
       method: 'POST',
@@ -77,7 +85,7 @@ describe('CreditsGuard', () => {
     await expect(guard.canActivate(contextFor(request))).resolves.toBe(true);
     expect(spend).toHaveBeenCalledWith(
       expect.objectContaining({
-        userId: 'user-1',
+        subject: userSubject('user-1'),
         amount: 1,
         feature: 'demo.paid',
       }),
@@ -86,9 +94,15 @@ describe('CreditsGuard', () => {
   });
 
   it('denies with INSUFFICIENT_CREDITS without marking spend', async () => {
-    const spend = jest.fn().mockRejectedValue(
-      new ApiException(402, ErrorCode.INSUFFICIENT_CREDITS, 'Insufficient credits.'),
-    );
+    const spend = jest
+      .fn()
+      .mockRejectedValue(
+        new ApiException(
+          402,
+          ErrorCode.INSUFFICIENT_CREDITS,
+          'Insufficient credits.',
+        ),
+      );
     const { guard, request } = build({ feature: 'demo.paid', spend });
 
     await expect(guard.canActivate(contextFor(request))).rejects.toMatchObject({
@@ -116,7 +130,7 @@ describe('CreditsRefundInterceptor', () => {
 
     const request: Record<string, unknown> = {
       [CREDITS_SPEND_REQUEST_KEY]: {
-        userId: 'user-1',
+        subject: userSubject('user-1'),
         feature: 'demo.paid',
         amount: 1,
         spendIdempotencyKey: 'spend:r:demo.paid',
@@ -135,7 +149,7 @@ describe('CreditsRefundInterceptor', () => {
 
     expect(refund).toHaveBeenCalledWith(
       expect.objectContaining({
-        userId: 'user-1',
+        subject: userSubject('user-1'),
         amount: 1,
         idempotencyKey: 'refund:r:demo.paid',
         feature: 'demo.paid',
@@ -151,7 +165,7 @@ describe('CreditsRefundInterceptor', () => {
 
     const request: Record<string, unknown> = {
       [CREDITS_SPEND_REQUEST_KEY]: {
-        userId: 'user-1',
+        subject: userSubject('user-1'),
         feature: 'demo.paid',
         amount: 1,
         spendIdempotencyKey: 'spend:r:demo.paid',

@@ -1,3 +1,5 @@
+import { organizationSubject } from '@modules/organizations/billing-subject';
+
 import { PLAN_SLUGS, ENTITLEMENTS } from './entitlements';
 import { PlanResolutionService } from './plan-resolution.service';
 
@@ -17,9 +19,7 @@ const LITE = {
     { entitlementKey: ENTITLEMENTS.FEATURE_ADVANCED, enabled: false },
     { entitlementKey: ENTITLEMENTS.FEATURE_PRIORITY_SUPPORT, enabled: false },
   ],
-  usageLimits: [
-    { feature: 'demo', dailyLimit: 100, weeklyLimit: 500 },
-  ],
+  usageLimits: [{ feature: 'demo', dailyLimit: 100, weeklyLimit: 500 }],
 };
 
 const PRO = {
@@ -31,9 +31,7 @@ const PRO = {
     { entitlementKey: ENTITLEMENTS.FEATURE_ADVANCED, enabled: true },
     { entitlementKey: ENTITLEMENTS.FEATURE_PRIORITY_SUPPORT, enabled: false },
   ],
-  usageLimits: [
-    { feature: 'demo', dailyLimit: 1_000, weeklyLimit: 5_000 },
-  ],
+  usageLimits: [{ feature: 'demo', dailyLimit: 1_000, weeklyLimit: 5_000 }],
 };
 
 describe('PlanResolutionService', () => {
@@ -144,5 +142,31 @@ describe('PlanResolutionService', () => {
     };
     expect(service.meetsMinimumPlan(pro, PLAN_SLUGS.PRO)).toBe(true);
     expect(service.meetsMinimumPlan(pro, PLAN_SLUGS.LITE)).toBe(true);
+  });
+
+  it('resolves an entitled organization subscription for an organization subject', async () => {
+    const subscriptionFindMany = jest.fn().mockResolvedValue([
+      {
+        id: 'sub-org-1',
+        planId: PRO.id,
+        status: 'active',
+        interval: 'monthly',
+        currentPeriodEnd: null,
+        updatedAt: new Date(),
+      },
+    ]);
+    const service = serviceWith({
+      plan: { findMany: jest.fn().mockResolvedValue([LITE, PRO]) },
+      subscription: { findMany: subscriptionFindMany },
+    });
+    await service.reloadMatrices();
+
+    const effective = await service.resolve(organizationSubject('org-1'));
+
+    expect(subscriptionFindMany).toHaveBeenCalledWith(
+      expect.objectContaining({ where: { organizationId: 'org-1' } }),
+    );
+    expect(effective.slug).toBe(PLAN_SLUGS.PRO);
+    expect(effective.fromSubscription).toBe(true);
   });
 });

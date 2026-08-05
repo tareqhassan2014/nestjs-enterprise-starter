@@ -11,6 +11,7 @@ import { APP_OPTIONS, configureApp } from '@/bootstrap';
 export async function createTestApp(
   customise?: (builder: TestingModuleBuilder) => TestingModuleBuilder,
   extraImports: unknown[] = [],
+  options?: { logger?: false | ('error' | 'warn' | 'log' | 'debug' | 'verbose')[] },
 ): Promise<NestExpressApplication> {
   let builder = Test.createTestingModule({
     imports: [AppModule, ...(extraImports as [])],
@@ -29,7 +30,7 @@ export async function createTestApp(
   // parsers enabled and the auth surface would hang here but work in production.
   const app = moduleRef.createNestApplication<NestExpressApplication>({
     ...APP_OPTIONS,
-    logger: false,
+    logger: options?.logger ?? false,
   });
 
   configureApp(app);

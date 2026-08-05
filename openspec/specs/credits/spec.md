@@ -2,15 +2,15 @@
 
 ## Purpose
 
-Per-user pay-as-you-go credit wallet and immutable ledger, with a Nest gate after usage limits so annotated routes can debit catalogue costs before handlers run.
+Pay-as-you-go credit wallet and immutable ledger, owned by a user or (when a request carries an org-primary billing subject) an organization, with a Nest gate after usage limits so annotated routes can debit catalogue costs before handlers run.
 
 ## Requirements
 
 ### Requirement: Per-user wallet with immutable ledger
 
-The system SHALL maintain a per-user credit wallet whose balance is updated only together with an append-only ledger entry. Ledger entries MUST record type (`grant`, `spend`, `refund`, or `adjust`), a positive amount, `balanceAfter`, an optional feature identifier, and a unique `idempotencyKey`.
+The system SHALL maintain credit wallets whose balance is updated only together with an append-only ledger entry. Each wallet MUST be owned by exactly one billing owner: a user or an organization. Ledger entries MUST record type (`grant`, `spend`, `refund`, or `adjust`), a positive amount, `balanceAfter`, an optional feature identifier, a unique `idempotencyKey`, and the same owner as the wallet.
 
-Balance MUST never go negative as a result of a successful spend. Wallets MAY be created lazily on the first credit mutation for a user.
+Balance MUST never go negative as a result of a successful spend. Wallets MAY be created lazily on the first credit mutation for that owner.
 
 #### Scenario: Grant increases balance and appends ledger
 
@@ -31,6 +31,36 @@ Balance MUST never go negative as a result of a successful spend. Wallets MAY be
 
 - **WHEN** a prior ledger entry is inspected after later mutations
 - **THEN** its type, amount, and `balanceAfter` remain exactly as originally written
+
+#### Scenario: Organization owner wallet
+
+- **WHEN** credits are granted to an organization owner with a new idempotency key
+- **THEN** the organization wallet balance increases and the ledger entry references that organization owner
+
+### Requirement: Org-scoped wallets via billing subject
+
+The system SHALL support credit wallets owned by either a user or an organization, with exactly one owner kind per wallet. When the billing subject resolver returns an organization subject, grant, spend, refund, adjust, and balance reads MUST operate on that organization's wallet. When the subject is a user, behaviour MUST match the existing per-user wallet rules.
+
+Ledger entries MUST record the same owner as the wallet they affect. Idempotency keys remain unique across the ledger.
+
+#### Scenario: Org spend debits org wallet
+
+- **WHEN** a spend is invoked for an organization billing subject with sufficient org wallet balance
+- **THEN** the organization wallet balance decreases and a `spend` ledger entry is written for that organization owner
+
+#### Scenario: User subject unchanged
+
+- **WHEN** a spend is invoked for a user billing subject
+- **THEN** only that user's wallet is debited and no organization wallet is mutated
+
+### Requirement: Credits gate uses billing subject
+
+The credits gate SHALL resolve the billing subject from the authenticated principal and optional organization context before debiting. It MUST NOT hard-code user-only wallet lookup when an org-primary subject is active.
+
+#### Scenario: Org-primary annotated route
+
+- **WHEN** an entitled member in org-primary context calls a credits-annotated route with sufficient org balance
+- **THEN** the organization wallet is debited and the handler executes
 
 ### Requirement: Credit mutations are idempotent
 
@@ -118,17 +148,22 @@ The starter SHALL ship at least one demonstration route annotated to cost credit
 
 ### Requirement: Low-balance extension point
 
-When a low-balance threshold is configured, the system SHALL emit a structured extension signal (domain event or equivalent) after a spend that leaves the wallet at or below that threshold. The signal MUST NOT itself send email or enqueue work as part of this capability.
+When a low-balance threshold is configured, the system SHALL emit a structured extension signal (domain event or equivalent) after a spend that leaves the wallet at or below that threshold. The credits capability itself MUST NOT send SMTP directly. A separate integration MAY enqueue email via job-queues when feature flags or configuration enable that bridge.
 
 #### Scenario: Threshold crossed emits signal
 
 - **WHEN** a spend leaves the balance at or below the configured threshold
-- **THEN** a low-balance signal is emitted with the user identifier and resulting balance
+- **THEN** a low-balance signal is emitted with the billing subject identifier and resulting balance
 
 #### Scenario: Threshold absent is silent
 
 - **WHEN** no low-balance threshold is configured
 - **THEN** spends do not require emission of a low-balance signal
+
+#### Scenario: Optional email bridge enqueues
+
+- **WHEN** the low-balance email bridge is enabled and a threshold-crossing signal is emitted
+- **THEN** an `email` queue job is enqueued and the spend path does not call SMTP inline
 
 ### Requirement: Cross-user credit inspection and adjust are admin concerns
 

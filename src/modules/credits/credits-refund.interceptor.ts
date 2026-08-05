@@ -31,13 +31,15 @@ export class CreditsRefundInterceptor implements NestInterceptor {
 
     const request = context.switchToHttp().getRequest<Request>();
 
-    return next.handle().pipe(
-      catchError((error: unknown) =>
-        from(this.refundIfNeeded(request, error)).pipe(
-          switchMap(() => throwError(() => error)),
+    return next
+      .handle()
+      .pipe(
+        catchError((error: unknown) =>
+          from(this.refundIfNeeded(request, error)).pipe(
+            switchMap(() => throwError(() => error)),
+          ),
         ),
-      ),
-    );
+      );
   }
 
   private async refundIfNeeded(
@@ -56,7 +58,7 @@ export class CreditsRefundInterceptor implements NestInterceptor {
 
     try {
       await this.credits.refund({
-        userId: marker.userId,
+        subject: marker.subject,
         amount: marker.amount,
         idempotencyKey: marker.refundIdempotencyKey,
         feature: marker.feature,
@@ -70,7 +72,7 @@ export class CreditsRefundInterceptor implements NestInterceptor {
     } catch (refundError) {
       this.logger.error({
         msg: 'Failed to refund credits after handler failure',
-        userId: marker.userId,
+        subject: marker.subject,
         feature: marker.feature,
         refundIdempotencyKey: marker.refundIdempotencyKey,
         error:

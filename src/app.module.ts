@@ -9,6 +9,7 @@ import { EventEmitterModule } from '@nestjs/event-emitter';
 import { json, raw, urlencoded } from 'express';
 
 import { CommonModule } from '@common/common.module';
+import { IdempotencyModule } from '@common/idempotency/idempotency.module';
 import { RequestContextMiddleware } from '@common/middleware/request-context.middleware';
 import {
   appConfig,
@@ -17,34 +18,43 @@ import {
   creditsConfig,
   databaseConfig,
   envFilePaths,
+  featureFlagsConfig,
+  idempotencyConfig,
   loggerConfig,
   mailConfig,
-    observabilityConfig,
-    mcpConfig,
-    redisConfig,
-    securityConfig,
-    stripeConfig,
-    throttleConfig,
-    usageLimitsConfig,
-    validateEnv,
-  } from '@config/index';
-  import { HealthModule } from '@infrastructure/health/health.module';
-  import { LoggerModule } from '@infrastructure/logger/logger.module';
-  import { MailModule } from '@infrastructure/mail/mail.module';
-  import { PrismaModule } from '@infrastructure/prisma/prisma.module';
-  import { RedisModule } from '@infrastructure/redis/redis.module';
-  import { AdminModule } from '@modules/admin/admin.module';
-  import { ApiKeysModule } from '@modules/api-keys/api-keys.module';
-  import { AuthModule } from '@modules/auth/auth.module';
-  import { BetterAuthMiddleware } from '@modules/auth/better-auth.middleware';
-  import { AuthorizationModule } from '@modules/authorization/authorization.module';
-  import { BillingModule } from '@modules/billing/billing.module';
-  import { CreditsModule } from '@modules/credits/credits.module';
-  import { McpModule } from '@modules/mcp/mcp.module';
-  import { MetricsModule } from '@modules/metrics/metrics.module';
-  import { PlansModule } from '@modules/plans/plans.module';
-  import { ThrottlingModule } from '@modules/throttling/throttling.module';
-  import { UsageLimitsModule } from '@modules/usage-limits/usage-limits.module';
+  mcpConfig,
+  observabilityConfig,
+  queuesConfig,
+  redisConfig,
+  securityConfig,
+  shutdownConfig,
+  storageConfig,
+  stripeConfig,
+  throttleConfig,
+  usageLimitsConfig,
+  validateEnv,
+} from '@config/index';
+import { HealthModule } from '@infrastructure/health/health.module';
+import { LoggerModule } from '@infrastructure/logger/logger.module';
+import { MailModule } from '@infrastructure/mail/mail.module';
+import { PrismaModule } from '@infrastructure/prisma/prisma.module';
+import { RedisModule } from '@infrastructure/redis/redis.module';
+import { StorageModule } from '@infrastructure/storage/storage.module';
+import { AdminModule } from '@modules/admin/admin.module';
+import { ApiKeysModule } from '@modules/api-keys/api-keys.module';
+import { AuthModule } from '@modules/auth/auth.module';
+import { BetterAuthMiddleware } from '@modules/auth/better-auth.middleware';
+import { AuthorizationModule } from '@modules/authorization/authorization.module';
+import { BillingModule } from '@modules/billing/billing.module';
+import { CreditsModule } from '@modules/credits/credits.module';
+import { FeatureFlagsModule } from '@modules/feature-flags/feature-flags.module';
+import { McpModule } from '@modules/mcp/mcp.module';
+import { MetricsModule } from '@modules/metrics/metrics.module';
+import { OrganizationsModule } from '@modules/organizations/organizations.module';
+import { PlansModule } from '@modules/plans/plans.module';
+import { QueuesModule } from '@modules/queues/queues.module';
+import { ThrottlingModule } from '@modules/throttling/throttling.module';
+import { UsageLimitsModule } from '@modules/usage-limits/usage-limits.module';
 
 import { API_PREFIX } from './bootstrap';
 
@@ -91,6 +101,11 @@ const STRIPE_WEBHOOK_ROUTE = {
         stripeConfig,
         observabilityConfig,
         mcpConfig,
+        queuesConfig,
+        storageConfig,
+        featureFlagsConfig,
+        idempotencyConfig,
+        shutdownConfig,
       ],
     }),
     EventEmitterModule.forRoot(),
@@ -98,8 +113,14 @@ const STRIPE_WEBHOOK_ROUTE = {
     PrismaModule,
     RedisModule,
     MailModule,
+    StorageModule,
+    FeatureFlagsModule,
+    QueuesModule,
     AuthModule,
     AuthorizationModule,
+    // OrganizationContextGuard (APP_GUARD) must sit after Auth/Permissions and
+    // before Plans/Throttling/UsageLimits/Credits — see OrganizationsModule.
+    OrganizationsModule,
     PlansModule,
     ThrottlingModule,
     UsageLimitsModule,
@@ -110,6 +131,9 @@ const STRIPE_WEBHOOK_ROUTE = {
     MetricsModule,
     AdminModule,
     HealthModule,
+    // Must precede CommonModule so IdempotencyInterceptor wraps
+    // ResponseEnvelopeInterceptor — see IdempotencyModule.
+    IdempotencyModule,
     CommonModule,
   ],
 })
@@ -134,7 +158,9 @@ export class AppModule implements NestModule {
 
     consumer.apply(BetterAuthMiddleware).forRoutes(`${AUTH_ROUTE_PATTERN}`);
 
-    consumer.apply(raw({ type: 'application/json' })).forRoutes(STRIPE_WEBHOOK_ROUTE);
+    consumer
+      .apply(raw({ type: 'application/json' }))
+      .forRoutes(STRIPE_WEBHOOK_ROUTE);
 
     consumer
       .apply(json({ limit: '1mb' }), urlencoded({ extended: true }))

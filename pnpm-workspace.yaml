@@ -4,5 +4,6 @@ allowBuilds:
   '@prisma/engines': true
   '@scarf/scarf': false
   '@swc/core': true
+  msgpackr-extract: false
   prisma: true
   unrs-resolver: true

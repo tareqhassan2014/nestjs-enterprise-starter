@@ -21,16 +21,22 @@ Fork it and build features on top — the parts every service needs are decided 
 | Abuse resistance | Per-address auth rate limits on Redis, plus self-healing per-account lockout |
 | Request throttling | Redis-backed Nest burst + per-minute limits; stricter on account Nest routes |
 | Usage limits | Daily/weekly Redis counters per user (and optional org) + feature; ceilings from plan matrices |
-| Plans & subscriptions | Lite / Pro / Enterprise catalogue, monthly/yearly intervals, entitlement gate, seeded limit matrices |
-| Credits & Stripe top-up | Per-user wallet + immutable ledger, `@CostsCredits` gate, Checkout Sessions for credit packs |
+| Plans & subscriptions | Lite / Pro / Enterprise catalogue, monthly/yearly intervals, entitlement gate, seeded limit matrices, org-owned subscriptions |
+| Credits & Stripe top-up | User **or** organization wallet + immutable ledger, `@CostsCredits` gate, Checkout Sessions for credit packs |
+| Organizations | Create/list orgs, membership with `owner`/`admin`/`member` roles, `X-Organization-Id` binding resolves a `BillingSubject` |
+| Job queues | BullMQ (`email`, `webhooks.outbound`, `usage.rollups`) with retries/backoff and a bounded-drain graceful shutdown |
+| File storage | `ObjectStorage` port — local-disk adapter for dev, S3 adapter for production (boot fails on an incomplete config) |
+| Feature flags | Code-declared catalogue, DB overrides (user → org → global) over env → code defaults |
+| Request idempotency | `Idempotency-Key` header + `@Idempotent()`, replay-safe on critical POSTs (org create, checkout, admin credit adjust) |
 | Admin monitoring | `/api/v1/admin` usage dashboards, subscription/credit inspection & adjust, audit log, Prometheus `/metrics`, Swagger Admin tags |
 | MCP (agents) | Nest-hosted Streamable HTTP MCP at `/mcp` with Bearer API keys; tools map to existing services through RBAC → plan → throttle → usage → credits |
 | Transport security | Helmet with an API-appropriate CSP, CORS allowlist, hardened session cookies |
-| Mail | Provider-agnostic port with a recording dev adapter and an SMTP adapter |
+| Mail | Provider-agnostic port with a recording dev adapter and an SMTP adapter; non-critical sends go through the `email` queue |
+| Graceful shutdown | Readiness fails fast on `SIGTERM`, BullMQ workers drain within a bounded window, Redis connections force-close past the deadline |
 | Local stack | Docker Compose: app + Postgres + Redis + Mailpit, with healthchecks |
 | CI | GitHub Actions: lint, typecheck, unit, integration, build, boot smoke test, image build |
 
-Not included by design: Stripe **Subscription** Billing sync (plans stay app-owned), Connect / Tax / Customer Portal, admin SPA / Grafana stack.
+Not included by design: Stripe **Subscription** Billing sync (plans stay app-owned), Connect / Tax / Customer Portal, admin SPA / Grafana stack, a real webhook fan-out product (the `webhooks.outbound` queue is a delivery primitive, not a subscriptions UI).
 
 ## Requirements
 
@@ -409,6 +415,22 @@ Commercial packaging is first-class: **Lite**, **Pro**, and optional **Enterpris
 
 Stripe **Subscription** objects do not drive plan status here — Checkout in this starter is for **credit top-up only** (see below). Nullable Stripe id columns on `subscriptions` remain for forks that add Billing sync later.
 
+## Organizations and multi-tenancy
+
+Billing, credits, and plans are resolved against a **`BillingSubject`** — either a user or an organization — not hardcoded to `userId`.
+
+| Piece | Where |
+| --- | --- |
+| Model | `Organization`, `OrganizationMember` (`owner` / `admin` / `member`), `organizations.billingMode` (`user` or `organization`) |
+| Service | `OrganizationsService` — `create`, `listMine`, `addMember`, `removeMember` (role checks; the last `owner` cannot be removed) |
+| API | `POST /api/v1/organizations` (idempotent), `GET /api/v1/organizations` (mine), member add/list/remove under `/api/v1/organizations/:organizationId/members` |
+| Binding | `X-Organization-Id` header → `OrganizationContextGuard` verifies membership, then publishes `organizationId` on `RequestContext` |
+| Billing subject | `BillingSubjectResolver` — no org header → `{ type: 'user' }`; org header + membership + `billingMode: organization` → `{ type: 'organization' }` |
+
+`CreditService` and `PlanResolutionService` both accept a `BillingSubject | string` (the plain string is kept for call sites that only ever dealt in `userId`), so a fork can turn on org billing for a route by resolving and passing a subject — no signature break for the rest of the app. `CreditWallet`, `CreditLedgerEntry`, and `Subscription` all use a DB check constraint enforcing exactly one of `userId` / `organizationId`.
+
+**Not included:** org invitations by email, per-org SSO, transferring ownership between organizations, org-level plan overrides beyond `billingMode`.
+
 ## Credits and Stripe top-up
 
 Pay-as-you-go credits sit **after** usage limits in the guard chain.
@@ -416,20 +438,20 @@ Pay-as-you-go credits sit **after** usage limits in the guard chain.
 | Piece | Where |
 | --- | --- |
 | Cost catalogue | `src/modules/credits/credit-costs.ts` (`CREDIT_COSTS`) |
-| Ledger + wallet | `CreditService` — `grant` / `spend` / `refund` / `adjust`, each with an idempotency key |
+| Ledger + wallet | `CreditService` — `grant` / `spend` / `refund` / `adjust`, each with an idempotency key, keyed by `BillingSubject` |
 | Gate | `@CostsCredits('demo.paid')` — pre-handler spend; compensating refund if the handler throws |
 | Balance API | `GET /api/v1/billing/credits` (optional `…/ledger`) |
 | Demo | `POST /api/v1/billing/demo/paid` |
-| Checkout | `POST /api/v1/billing/checkout` with a configured pack slug |
+| Checkout | `POST /api/v1/billing/checkout` with a configured pack slug — requires `Idempotency-Key` |
 | Webhook | `POST /api/v1/billing/webhook` — raw body, no success envelope |
 
 **Idempotency:** ledger keys are unique. Guard spends use `spend:{requestId}:{feature}`; Stripe grants use `stripe:checkout:{sessionId}` so webhook retries never double-credit. Pack credit amounts come from **server config**, not from client-supplied metadata alone.
 
 **Stripe config** is optional as a group (`STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`, `STRIPE_CREDIT_PACKS`). Absent → ledger and `@CostsCredits` still work; Checkout returns `503 SERVICE_UNAVAILABLE`. Prefer a restricted key (`rk_`) in real deployments. Packs are `slug:credits:priceId` comma-separated. API version follows the installed Stripe Node SDK (`2026-07-29.dahlia` for stripe@22).
 
-Optional `CREDITS_LOW_BALANCE_THRESHOLD` emits a `credits.low_balance` event after a spend that crosses it — no mail/queue wiring in the starter.
+`CREDITS_LOW_BALANCE_THRESHOLD` emits a `credits.low_balance` event after a spend that crosses it. `LowBalanceEmailListener` bridges that event to the `email` queue — behind the `email.low_balance` feature flag or `EMAIL_LOW_BALANCE_ENABLED` — and resolves the recipient from the subject (the user themselves, or the organization's oldest `owner`).
 
-**Not included:** Connect, Tax, Customer Portal, Stripe PaymentIntent refunds as product refunds, org wallets, or driving subscription `past_due` / cancel from invoices.
+**Not included:** Connect, Tax, Customer Portal, Stripe PaymentIntent refunds as product refunds, or driving subscription `past_due` / cancel from invoices.
 
 ## Admin monitoring
 
@@ -494,6 +516,54 @@ Application code sends through one port, `MailerService`, and never names a prov
 `log` is refused in production on purpose: it would make sign-up appear to succeed while every verification and reset message silently vanished, leaving accounts nobody can reach. A boot failure is strictly better than unreachable users.
 
 To use a hosted provider, implement `MailerService` in `src/infrastructure/mail/`, bind it in `MailModule`, and change one config value. No authentication code changes.
+
+## Job queues
+
+Auth mail (verification, reset) stays on the **synchronous** `MailerService` path — those failures need to be visible to the caller, not swallowed by a background worker. Everything that is not on the request's critical path goes through BullMQ instead.
+
+| Queue | Purpose | Processor |
+| --- | --- | --- |
+| `email` | Non-critical mail (e.g. low-balance notices) | `EmailProcessor` → `MailerService.send` |
+| `webhooks.outbound` | Outbound webhook delivery | `WebhookProcessor` — `fetch` with a timeout, throws on non-2xx to trigger a BullMQ retry |
+| `usage.rollups` | Periodic usage counter housekeeping | `UsageRollupProcessor` — read-only `SCAN` over `usage:*`, does not affect live limit checks |
+
+BullMQ gets its **own** `ioredis` connection (`maxRetriesPerRequest: null`), separate from the application's general Redis client, which is deliberately configured to fail fast instead of blocking on retries. Queue name prefix, retry attempts, and backoff come from the `queues` config namespace (`BULLMQ_*` env vars).
+
+**Enqueue services** (`EmailQueueService`, `WebhookQueueService`, `UsageRollupQueueService`) are the only exported surface — application code never touches a `Queue` directly. `UsageRollupQueueService` can also self-schedule on an interval via `USAGE_ROLLUP_INTERVAL_MS` (`0` disables the timer; an admin/cron trigger can still call `enqueueRollup()`).
+
+**Graceful shutdown:** `QueueShutdownService` polls each queue's active job count and returns as soon as it hits zero. If jobs are still running after `SHUTDOWN_DRAIN_MS`, it force-disconnects BullMQ's Redis connection rather than let `@nestjs/bullmq`'s unbounded `worker.close()` hang the process. `/health/ready` fails the instant shutdown starts (before the drain window even begins), so an orchestrator stops routing new traffic while in-flight jobs still have the full window to finish.
+
+## File storage
+
+One port, `ObjectStorage` (`put` / `get` / `delete` / optional `getSignedUrl`), two adapters, selected by `STORAGE_DRIVER`.
+
+| `STORAGE_DRIVER` | Behaviour |
+| --- | --- |
+| `local` | Writes under a configured root directory. Path traversal outside that root is rejected. **Refused when `NODE_ENV=production`.** |
+| `s3` | `@aws-sdk/client-s3` + a presigned-URL helper. Requires the whole `STORAGE_S3_*` group (bucket, region, credentials). |
+
+Same reasoning as `MAIL_TRANSPORT=log` in production: a local adapter silently "succeeding" on ephemeral container disk is worse than a boot failure. Add a new backend by implementing `ObjectStorage` and switching one config value — no call-site changes.
+
+## Feature flags
+
+A small layered override system, not a full flag-management product.
+
+Resolution order (first match wins): **per-user DB override → per-organization DB override → global DB override → env default → code default.** Flags are declared once in `src/modules/feature-flags/feature-flags.catalogue.ts` (`FeatureFlagKey`); passing an undeclared key is a type error at compile time and a rejected call at runtime.
+
+`FeatureFlagsService.setOverride(key, enabled, { userId? , organizationId? })` writes a `FeatureFlagOverride` row; omitting both scopes it globally. Currently used internally by `email.low_balance` (gates the low-balance → email bridge) — `org.billing` is declared for forks that want to stage org billing per-tenant before flipping it everywhere.
+
+## Request idempotency
+
+`@Idempotent()` on a controller method requires an `Idempotency-Key` header and makes retries of that exact request safe.
+
+| Behaviour | Detail |
+| --- | --- |
+| Missing header | `400` with `IDEMPOTENCY_KEY_REQUIRED` |
+| First request | Body is hashed, an `IdempotencyRecord` row is created (`processing`), the handler runs, the response is stored and replayed verbatim on retry |
+| Same key, different body | `409` with `IDEMPOTENCY_KEY_REUSE` — the key is a request fingerprint, not just a dedupe token |
+| Concurrent duplicate | The unique `(principalId, key)` constraint means the second insert fails fast (Postgres `23505`), rather than the handler running twice |
+
+Applied today to `POST /api/v1/organizations`, `POST /api/v1/billing/checkout`, and `POST /api/v1/admin/users/:userId/credits/adjust`. Records expire after `IDEMPOTENCY_TTL_SECONDS`; add the decorator to any other POST/PUT that must not double-apply on a client retry.
 
 ## Knobs you may want, and what they cost
 

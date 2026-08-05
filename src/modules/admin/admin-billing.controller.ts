@@ -23,6 +23,7 @@ import {
 import { RequestContext } from '@common/context/request-context';
 import { ApiException } from '@common/errors/api-exception';
 import { ErrorCode } from '@common/errors/error-code';
+import { Idempotent } from '@common/idempotency/idempotent.decorator';
 import { CurrentUser } from '@modules/auth/auth.decorators';
 import type { AuthenticatedPrincipal } from '@modules/auth/auth.service';
 import { RequirePermissions } from '@modules/authorization/authorization.decorators';
@@ -31,10 +32,7 @@ import { PlanResolutionService } from '@modules/plans/plan-resolution.service';
 import { StrictThrottle } from '@modules/throttling/throttle.decorators';
 import { PrismaService } from '@infrastructure/prisma/prisma.service';
 
-import {
-  AUDIT_ACTIONS,
-  AuditLogService,
-} from './audit-log.service';
+import { AUDIT_ACTIONS, AuditLogService } from './audit-log.service';
 
 class LedgerQueryDto {
   @IsOptional()
@@ -194,6 +192,7 @@ export class AdminBillingController {
 
   @Post(':userId/credits/adjust')
   @HttpCode(HttpStatus.OK)
+  @Idempotent()
   @StrictThrottle()
   @RequirePermissions('admin:credits:adjust')
   async adjust(

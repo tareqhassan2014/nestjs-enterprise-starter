@@ -3,6 +3,7 @@ import { IsString, MinLength } from 'class-validator';
 
 import { ApiException } from '@common/errors/api-exception';
 import { ErrorCode } from '@common/errors/error-code';
+import { Idempotent } from '@common/idempotency/idempotent.decorator';
 import { CurrentUser } from '@modules/auth/auth.decorators';
 import type { AuthenticatedPrincipal } from '@modules/auth/auth.service';
 
@@ -19,6 +20,7 @@ export class BillingCheckoutController {
   constructor(private readonly topup: StripeTopupService) {}
 
   @Post('checkout')
+  @Idempotent()
   async createCheckout(
     @CurrentUser() user: AuthenticatedPrincipal,
     @Body() body: CreateCheckoutDto,

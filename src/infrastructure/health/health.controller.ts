@@ -2,8 +2,10 @@ import { Controller, Get, Inject, VERSION_NEUTRAL } from '@nestjs/common';
 import type { ConfigType } from '@nestjs/config';
 import {
   HealthCheck,
+  HealthCheckError,
   type HealthCheckResult,
   HealthCheckService,
+  type HealthIndicatorResult,
   PrismaHealthIndicator,
 } from '@nestjs/terminus';
 import { SkipThrottle } from '@nestjs/throttler';
@@ -14,6 +16,7 @@ import { PrismaService } from '@infrastructure/prisma/prisma.service';
 import { Public } from '@modules/auth/auth.decorators';
 
 import { RedisHealthIndicator } from './redis.health';
+import { ShutdownState } from './shutdown-state.service';
 
 /**
  * Version-neutral and excluded from the global prefix, so probe paths stay at
@@ -36,6 +39,7 @@ export class HealthController {
     private readonly prismaHealth: PrismaHealthIndicator,
     private readonly redisHealth: RedisHealthIndicator,
     private readonly prisma: PrismaService,
+    private readonly shutdownState: ShutdownState,
     @Inject(redisConfig.KEY)
     private readonly config: ConfigType<typeof redisConfig>,
   ) {}
@@ -57,11 +61,26 @@ export class HealthController {
   @HealthCheck()
   ready(): Promise<HealthCheckResult> {
     return this.health.check([
+      () => this.shutdownCheck(),
       () =>
         this.prismaHealth.pingCheck('database', this.prisma, {
           timeout: this.config.healthTimeoutMs,
         }),
       () => this.redisHealth.isHealthy('redis'),
     ]);
+  }
+
+  /**
+   * Fails readiness the instant shutdown begins, ahead of queue/connection
+   * draining, so an orchestrator stops routing new traffic while in-flight
+   * work still has time to finish within the drain window.
+   */
+  private shutdownCheck(): HealthIndicatorResult {
+    if (this.shutdownState.isShuttingDown) {
+      throw new HealthCheckError('Application is shutting down', {
+        shutdown: { status: 'down' },
+      });
+    }
+    return { shutdown: { status: 'up' } };
   }
 }

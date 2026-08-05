@@ -21,6 +21,21 @@ export {
   type ObservabilityConfig,
 } from './observability.config';
 export { mcpConfig, type McpConfig } from './mcp.config';
+export {
+  QUEUE_NAMES,
+  queuesConfig,
+  type QueuesConfig,
+} from './queues.config';
+export { storageConfig, type StorageConfig } from './storage.config';
+export {
+  featureFlagsConfig,
+  type FeatureFlagsConfig,
+} from './feature-flags.config';
+export {
+  idempotencyConfig,
+  type IdempotencyConfig,
+} from './idempotency.config';
+export { shutdownConfig, type ShutdownConfig } from './shutdown.config';
 export { envFilePaths } from './env-files';
 export {
   type Env,

@@ -73,6 +73,7 @@ model User {
   adminAuditLogs AdminAuditLog[] @relation("AdminAuditActor")
   apiKeys        ApiKey[]
   mcpInvocations McpToolInvocation[]
+  organizationMemberships OrganizationMember[]
 
   @@map("users")
 }
@@ -313,11 +314,18 @@ model PlanUsageLimit {
 }
 
 /// User↔plan binding with billing interval and lifecycle status.
+///
+/// Owned by exactly one of `userId` / `organizationId` (never both, never
+/// neither) — enforced by a check constraint added in the
+/// `async_cross_cutting` migration, not by Prisma. Organization-owned rows are
+/// additive: user-primary subscriptions are unaffected. See `BillingSubject`
+/// and design.md decision 4.
 model Subscription {
   id String @id @default(cuid())
 
-  userId String
-  planId String
+  userId         String?
+  organizationId String?
+  planId         String
 
   interval BillingInterval
   status   SubscriptionStatus
@@ -334,10 +342,12 @@ model Subscription {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
-  plan Plan @relation(fields: [planId], references: [id], onDelete: Restrict)
+  user         User?         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  organization Organization? @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  plan         Plan          @relation(fields: [planId], references: [id], onDelete: Restrict)
 
   @@index([userId])
+  @@index([organizationId])
   @@index([planId])
   @@index([status])
   @@map("subscriptions")
@@ -358,25 +368,39 @@ enum CreditLedgerType {
   adjust
 }
 
-/// Cached balance per user. Created lazily on the first credit mutation.
+/// Cached balance per wallet owner. Created lazily on the first credit
+/// mutation, and owned by exactly one of `userId` / `organizationId` — never
+/// both, never neither. Enforced by a check constraint added in the
+/// `async_cross_cutting` migration (Prisma has no native XOR constraint); see
+/// `BillingSubject` and design.md decision 4.
+///
+/// `id` exists so the row has a stable primary key independent of which owner
+/// column is populated — `userId` alone can no longer be `@id` once it is
+/// nullable.
 model CreditWallet {
-  userId  String @id
-  balance Int    @default(0)
+  id             String  @id @default(cuid())
+  userId         String? @unique
+  organizationId String? @unique
+  balance        Int     @default(0)
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user         User?         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  organization Organization? @relation(fields: [organizationId], references: [id], onDelete: Cascade)
 
   @@map("credit_wallets")
 }
 
-/// Append-only credit movement. `amount` is always positive; `type` is direction.
+/// Append-only credit movement. `amount` is always positive; `type` is
+/// direction. Owned by exactly one of `userId` / `organizationId`, mirroring
+/// the wallet it moves — see `CreditWallet`.
 model CreditLedgerEntry {
   id String @id @default(cuid())
 
-  userId String
-  type   CreditLedgerType
+  userId         String?
+  organizationId String?
+  type           CreditLedgerType
   /// Absolute credits moved; never negative.
   amount Int
   balanceAfter Int
@@ -387,9 +411,11 @@ model CreditLedgerEntry {
 
   createdAt DateTime @default(now())
 
-  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user         User?         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  organization Organization? @relation(fields: [organizationId], references: [id], onDelete: Cascade)
 
   @@index([userId, createdAt])
+  @@index([organizationId, createdAt])
   @@map("credit_ledger_entries")
 }
 
@@ -495,4 +521,136 @@ model McpToolInvocation {
   @@index([apiKeyId, createdAt])
   @@index([toolName, createdAt])
   @@map("mcp_tool_invocations")
+}
+
+// ---------------------------------------------------------------------------
+// Organizations — minimal membership + billing-subject hooks
+//
+// Not a tenancy product: no invitations, no SSO-per-org, no branding. Just
+// enough for `BillingSubjectResolver` to prefer an org wallet/subscription
+// over the calling user's when a request binds one and membership checks out.
+// See `src/modules/organizations/billing-subject.ts` and design.md decision 4.
+// ---------------------------------------------------------------------------
+
+enum OrganizationBillingMode {
+  user
+  organization
+}
+
+enum OrganizationMemberRole {
+  owner
+  admin
+  member
+}
+
+/// A billing-capable group of users. `billingMode` is the per-org kill switch:
+/// `user` (default) means members keep spending their own wallets even while
+/// bound to this org; `organization` means the org wallet/subscription is
+/// preferred once `FEATURE_FLAG_ORG_BILLING` also allows it.
+model Organization {
+  id          String                  @id @default(cuid())
+  slug        String                  @unique
+  name        String
+  billingMode OrganizationBillingMode @default(user)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  members       OrganizationMember[]
+  subscriptions Subscription[]
+  creditWallet  CreditWallet?
+  creditLedger  CreditLedgerEntry[]
+  flagOverrides FeatureFlagOverride[]
+
+  @@map("organizations")
+}
+
+/// One row per user↔organization pairing. The composite unique is what makes
+/// membership checks (and re-adding an existing member) idempotent.
+model OrganizationMember {
+  id String @id @default(cuid())
+
+  organizationId String
+  userId         String
+  role           OrganizationMemberRole @default(member)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  user         User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([organizationId, userId])
+  @@index([userId])
+  @@map("organization_members")
+}
+
+// ---------------------------------------------------------------------------
+// Feature flags — optional persisted overrides
+//
+// The flag *vocabulary* is code (src/modules/feature-flags/feature-flags.catalogue.ts).
+// A row here overrides the env default for one user or one organization;
+// global overrides (both null) apply to everyone. Resolution order lives in
+// FeatureFlagsService: user override → org override → env default → code
+// default. See design.md decision 3.
+// ---------------------------------------------------------------------------
+
+model FeatureFlagOverride {
+  id String @id @default(cuid())
+
+  flagKey        String
+  enabled        Boolean
+  userId         String?
+  organizationId String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  organization Organization? @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  /// Partial uniqueness (one global row, one row per user, one row per org
+  /// per flag) is enforced by conditional unique indexes in the migration,
+  /// since a plain `@@unique` cannot treat two NULLs as distinct rows here.
+  @@index([flagKey])
+  @@index([userId])
+  @@index([organizationId])
+  @@map("feature_flag_overrides")
+}
+
+// ---------------------------------------------------------------------------
+// HTTP idempotency — opt-in POSTs via `Idempotency-Key`
+//
+// One row per (principal, key). First request processes normally and stores
+// the outcome; a replay with the same key + request hash returns it unrun.
+// Same key + different hash is a conflict (`IDEMPOTENCY_KEY_REUSE`). Rows
+// expire via `expiresAt`; nothing here is read by BullMQ. See design.md
+// decision 5 and the `request-idempotency` capability.
+// ---------------------------------------------------------------------------
+
+enum IdempotencyRecordStatus {
+  processing
+  completed
+}
+
+model IdempotencyRecord {
+  id String @id @default(cuid())
+
+  /// Caller identity the key is scoped to — a userId or apiKeyId today.
+  principalId String
+  key         String
+  method      String
+  path        String
+  /// Hash of method + path + body, so the same key with a different payload
+  /// is a conflict rather than a silent replay of the wrong response.
+  requestHash String
+  status      IdempotencyRecordStatus @default(processing)
+  statusCode  Int?
+  responseBody Json?
+
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+
+  @@unique([principalId, key])
+  @@index([expiresAt])
+  @@map("idempotency_records")
 }

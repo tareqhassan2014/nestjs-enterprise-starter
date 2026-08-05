@@ -12,6 +12,17 @@ export interface RequestContextStore {
    * alone, which is what joins them to the rest of the request.
    */
   userId?: string;
+
+  /**
+   * The organization the request is bound to, set by `OrganizationContextGuard`
+   * once the `ORGANIZATION_HEADER` value has been verified against membership.
+   *
+   * Absent on requests that carry no organization header — which is the
+   * common case, since org binding is opt-in per request. Never set from the
+   * header alone: membership is always checked first. See
+   * `src/modules/organizations/billing-subject.ts`.
+   */
+  organizationId?: string;
 }
 
 const storage = new AsyncLocalStorage<RequestContextStore>();
@@ -59,6 +70,23 @@ export const RequestContext = {
 
     if (store) {
       store.userId = userId;
+    }
+  },
+
+  getOrganizationId(): string | undefined {
+    return storage.getStore()?.organizationId;
+  },
+
+  /**
+   * Records the bound organization on the *current* scope, mirroring
+   * `setUserId`. Called by `OrganizationContextGuard` after membership has
+   * already been verified — never from the raw header value.
+   */
+  setOrganizationId(organizationId: string): void {
+    const store = storage.getStore();
+
+    if (store) {
+      store.organizationId = organizationId;
     }
   },
 };

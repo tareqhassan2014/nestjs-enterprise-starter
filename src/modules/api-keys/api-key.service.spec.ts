@@ -6,7 +6,17 @@ describe('ApiKeyService', () => {
   const userId = 'user-1';
 
   function buildService(prismaOverrides?: Record<string, unknown>) {
-    const created = {
+    const created: {
+      id: string;
+      userId: string;
+      name: string;
+      prefix: string;
+      secretHash: string;
+      createdAt: Date;
+      lastUsedAt: Date | null;
+      revokedAt: Date | null;
+      updatedAt: Date;
+    } = {
       id: 'key-1',
       userId,
       name: 'Cursor',

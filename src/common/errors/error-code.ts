@@ -53,6 +53,18 @@ export const ErrorCode = {
    * Distinct from plan entitlements so clients can prompt a top-up.
    */
   INSUFFICIENT_CREDITS: 'INSUFFICIENT_CREDITS',
+
+  /**
+   * Idempotency outcomes for `@Idempotent()` routes — distinct from the
+   * generic `BAD_REQUEST` / `CONFLICT` so clients can tell "you forgot the
+   * header" from "you reused it with a different payload".
+   */
+
+  /** Route requires `Idempotency-Key` and the request did not send one. */
+  IDEMPOTENCY_KEY_REQUIRED: 'IDEMPOTENCY_KEY_REQUIRED',
+
+  /** Same key, different method/path/body — the key was not the same request. */
+  IDEMPOTENCY_KEY_REUSE: 'IDEMPOTENCY_KEY_REUSE',
 } as const;
 
 export type ErrorCode = (typeof ErrorCode)[keyof typeof ErrorCode];
