@@ -24,6 +24,7 @@ Fork it and build features on top — the parts every service needs are decided 
 | Plans & subscriptions | Lite / Pro / Enterprise catalogue, monthly/yearly intervals, entitlement gate, seeded limit matrices |
 | Credits & Stripe top-up | Per-user wallet + immutable ledger, `@CostsCredits` gate, Checkout Sessions for credit packs |
 | Admin monitoring | `/api/v1/admin` usage dashboards, subscription/credit inspection & adjust, audit log, Prometheus `/metrics`, Swagger Admin tags |
+| MCP (agents) | Nest-hosted Streamable HTTP MCP at `/mcp` with Bearer API keys; tools map to existing services through RBAC → plan → throttle → usage → credits |
 | Transport security | Helmet with an API-appropriate CSP, CORS allowlist, hardened session cookies |
 | Mail | Provider-agnostic port with a recording dev adapter and an SMTP adapter |
 | Local stack | Docker Compose: app + Postgres + Redis + Mailpit, with healthchecks |
@@ -239,6 +240,8 @@ First-party endpoints, inside the envelope:
 | Purpose | Endpoint |
 | --- | --- |
 | Current principal, roles, permissions | `GET /api/v1/account/me` |
+| Create / list / revoke agent API keys | `POST\|GET\|DELETE /api/v1/account/api-keys` |
+| MCP Streamable HTTP (no envelope) | `POST /mcp` — Bearer API key only |
 | Current plan, entitlements, usage ceilings | `GET /api/v1/billing/plan` |
 | Credit balance | `GET /api/v1/billing/credits` |
 | Recent credit ledger | `GET /api/v1/billing/credits/ledger?limit=20` |
@@ -269,6 +272,52 @@ Two transports carry the same session token:
 One session model means one expiry rule and one revocation path. Revoking kills both transports together.
 
 Redis is a cache here and never a source of truth. If it is unavailable, session reads fall through to Postgres and requests keep working — degraded in latency, not in correctness.
+
+## MCP for agents (Cursor / Claude / ChatGPT)
+
+Nest hosts a **Streamable HTTP** MCP server at `/mcp` (configurable via `MCP_PATH`, default `/mcp`). It sits outside `/api/v1` and outside the success envelope — same boundary class as `/health` and `/metrics`.
+
+**Auth:** `Authorization: Bearer <api_key>` only. Better Auth session cookies are **not** accepted on MCP. Create a key while signed in:
+
+```bash
+curl -X POST "$APP_URL/api/v1/account/api-keys" \
+  -H "Cookie: app.session_token=…" \
+  -H "Content-Type: application/json" \
+  -d '{"name":"Cursor laptop"}'
+```
+
+The response includes the plaintext secret **once** (`nes_…`). Store it in the client; list/revoke never return it again.
+
+**Tools** are thin adapters over existing services (profile, plan, credits, usage, plus a demo credit-gated tool). Every tool call runs **API key → RBAC → plan → Redis MCP throttle → usage → credits → adapter**. There is no second business layer.
+
+**Non-goals:** session-cookie MCP auth, OAuth dynamic client registration, org-level keys, auto-generating a tool per HTTP route.
+
+### Connect from Cursor
+
+In MCP settings (or `.cursor/mcp.json`), point a remote server at your app:
+
+```json
+{
+  "mcpServers": {
+    "nestjs-starter": {
+      "url": "http://localhost:3000/mcp",
+      "headers": {
+        "Authorization": "Bearer nes_YOUR_API_KEY"
+      }
+    }
+  }
+}
+```
+
+### Connect from Claude
+
+Use Claude’s custom MCP / connector configuration with the same Streamable HTTP URL and Bearer header. Prefer the remote HTTP transport (not stdio) against this Nest process.
+
+### Connect from ChatGPT
+
+Add a custom MCP action / connector with base URL `{APP_URL}/mcp` and an Authorization header carrying your API key. Confirm the product’s current remote MCP field names if they differ from `url` + `headers`.
+
+Set `MCP_ENABLED=false` to disable the transport entirely.
 
 ### Email verification is required
 

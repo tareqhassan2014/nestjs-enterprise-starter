@@ -20,6 +20,7 @@ export {
   observabilityConfig,
   type ObservabilityConfig,
 } from './observability.config';
+export { mcpConfig, type McpConfig } from './mcp.config';
 export { envFilePaths } from './env-files';
 export {
   type Env,

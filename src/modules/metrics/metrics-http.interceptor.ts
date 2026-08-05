@@ -8,6 +8,7 @@ import type { Request, Response } from 'express';
 import { Observable, tap } from 'rxjs';
 
 import { isHealthPath, requestPath } from '@common/http/health-routes';
+import { isMcpPath } from '@common/http/mcp-routes';
 import { isMetricsPath } from '@common/http/metrics-routes';
 
 import { MetricsService } from './metrics.service';
@@ -26,7 +27,7 @@ export class MetricsHttpInterceptor implements NestInterceptor {
     const response = http.getResponse<Response>();
     const path = requestPath(request);
 
-    if (isHealthPath(path) || isMetricsPath(path)) {
+    if (isHealthPath(path) || isMetricsPath(path) || isMcpPath(path)) {
       return next.handle();
     }
 

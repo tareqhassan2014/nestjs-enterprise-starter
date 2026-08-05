@@ -330,6 +330,36 @@ const envObjectSchema = z.object({
   ADMIN_USAGE_TOP_N: z.coerce.number().int().positive().max(100).default(20),
 
   // ---------------------------------------------------------------------------
+  // Nest-hosted MCP (agent tools / resources)
+  // ---------------------------------------------------------------------------
+
+  /** Serve Streamable HTTP MCP at MCP_PATH. On by default for local forks. */
+  MCP_ENABLED: booleanFlag(true),
+  /**
+   * Non-versioned mount path (default `/mcp`). Outside the Nest success
+   * envelope and global `/api` prefix.
+   */
+  MCP_PATH: z
+    .string()
+    .min(1)
+    .default('/mcp')
+    .refine((value) => value.startsWith('/'), {
+      message: 'must be an absolute path starting with /',
+    }),
+  MCP_THROTTLE_BURST_WINDOW_SECONDS: z.coerce
+    .number()
+    .int()
+    .positive()
+    .default(10),
+  MCP_THROTTLE_BURST_MAX: z.coerce.number().int().positive().default(30),
+  MCP_THROTTLE_MINUTE_WINDOW_SECONDS: z.coerce
+    .number()
+    .int()
+    .positive()
+    .default(60),
+  MCP_THROTTLE_MINUTE_MAX: z.coerce.number().int().positive().default(120),
+
+  // ---------------------------------------------------------------------------
   // Transport security
   // ---------------------------------------------------------------------------
 

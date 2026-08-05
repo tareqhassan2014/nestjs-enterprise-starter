@@ -71,6 +71,8 @@ model User {
   creditLedger  CreditLedgerEntry[]
   stripeCustomer StripeCustomer?
   adminAuditLogs AdminAuditLog[] @relation("AdminAuditActor")
+  apiKeys        ApiKey[]
+  mcpInvocations McpToolInvocation[]
 
   @@map("users")
 }
@@ -437,4 +439,60 @@ model AdminAuditLog {
   @@index([action, createdAt])
   @@index([targetType, targetId, createdAt])
   @@map("admin_audit_log")
+}
+
+// ---------------------------------------------------------------------------
+// Agent API keys + MCP tool invocation audit
+// ---------------------------------------------------------------------------
+
+/// User-scoped agent credential. Plaintext is shown once at create; only the
+/// hash is stored. Prefix enables lookup before constant-time hash compare.
+model ApiKey {
+  id String @id @default(cuid())
+
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  /// Operator-facing label (e.g. "Cursor laptop").
+  name String
+
+  /// Public lookup fragment of the secret (e.g. first 12 chars of `nes_…`).
+  prefix     String
+  secretHash String
+
+  lastUsedAt DateTime?
+  revokedAt  DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  invocations McpToolInvocation[]
+
+  @@unique([prefix])
+  @@index([userId])
+  @@index([userId, revokedAt])
+  @@map("api_keys")
+}
+
+/// Append-only MCP tool call trail (success / denied / error after auth).
+model McpToolInvocation {
+  id String @id @default(cuid())
+
+  userId   String
+  apiKeyId String
+  toolName String
+  /// success | denied | error
+  outcome   String
+  errorCode String?
+  requestId String?
+
+  createdAt DateTime @default(now())
+
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  apiKey ApiKey @relation(fields: [apiKeyId], references: [id], onDelete: Cascade)
+
+  @@index([userId, createdAt])
+  @@index([apiKeyId, createdAt])
+  @@index([toolName, createdAt])
+  @@map("mcp_tool_invocations")
 }

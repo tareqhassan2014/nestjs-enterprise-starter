@@ -19,6 +19,7 @@ export class MetricsService {
   private readonly httpDuration: Histogram<string>;
   private readonly http429: Counter<string>;
   private readonly creditMutations: Counter<string>;
+  private readonly mcpToolInvocations: Counter<string>;
 
   constructor() {
     collectDefaultMetrics({ register: this.registry });
@@ -51,6 +52,13 @@ export class MetricsService {
       labelNames: ['type'],
       registers: [this.registry],
     });
+
+    this.mcpToolInvocations = new Counter({
+      name: 'mcp_tool_invocations_total',
+      help: 'MCP tool invocations by tool name and outcome class',
+      labelNames: ['tool', 'outcome'],
+      registers: [this.registry],
+    });
   }
 
   async scrape(): Promise<string> {
@@ -80,6 +88,13 @@ export class MetricsService {
     type: 'grant' | 'spend' | 'refund' | 'adjust',
   ): void {
     this.creditMutations.inc({ type });
+  }
+
+  recordMcpToolInvocation(
+    tool: string,
+    outcome: 'success' | 'denied' | 'error',
+  ): void {
+    this.mcpToolInvocations.inc({ tool, outcome });
   }
 
   /**

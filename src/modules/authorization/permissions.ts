@@ -38,6 +38,10 @@ export const PERMISSIONS = [
   'admin:subscriptions:read',
   'admin:credits:read',
   'admin:credits:adjust',
+
+  // Agent API keys (session-managed) and MCP tool surface.
+  'api-keys:manage',
+  'mcp:tools:invoke',
 ] as const;
 
 /** Every valid permission key. Annotations are typed against this. */
@@ -60,6 +64,8 @@ export const PERMISSION_DESCRIPTIONS: Record<Permission, string> = {
   'admin:subscriptions:read': "Read another user's subscription and effective plan",
   'admin:credits:read': "Read another user's credit wallet and ledger",
   'admin:credits:adjust': 'Grant or adjust credits for another user',
+  'api-keys:manage': 'Create, list, and revoke your own agent API keys',
+  'mcp:tools:invoke': 'Invoke MCP tools as an authenticated agent',
 };
 
 /** Role names the seed guarantees exist. */
@@ -87,7 +93,13 @@ export const BASELINE_ROLES: Record<
 > = {
   [ROLE_NAMES.user]: {
     description: 'A registered end user, with authority over their own account',
-    permissions: ['account:read', 'account:update', 'account:delete'],
+    permissions: [
+      'account:read',
+      'account:update',
+      'account:delete',
+      'api-keys:manage',
+      'mcp:tools:invoke',
+    ],
   },
   [ROLE_NAMES.admin]: {
     description: 'Full administrative access',

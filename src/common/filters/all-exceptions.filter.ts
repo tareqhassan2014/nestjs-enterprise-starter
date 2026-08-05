@@ -13,6 +13,7 @@ import type { Request, Response } from 'express';
 import { ApiException } from '@common/errors/api-exception';
 import { ErrorCode, errorCodeForStatus } from '@common/errors/error-code';
 import { isHealthPath, requestPath } from '@common/http/health-routes';
+import { isMcpPath } from '@common/http/mcp-routes';
 import {
   type ErrorEnvelope,
   buildResponseMeta,
@@ -97,12 +98,12 @@ export class AllExceptionsFilter implements ExceptionFilter {
     const response = ctx.getResponse<Response>();
 
     /**
-     * Health probes are the one carve-out: an orchestrator needs the Terminus
-     * payload naming the failing dependency, not our envelope. Every other
-     * route — including `@NoEnvelope()` ones — errors through the envelope.
+     * Health probes and MCP transport are carve-outs: orchestrators / MCP clients
+     * need raw payloads, not the Nest success/error envelope.
      */
     if (
-      isHealthPath(requestPath(request)) &&
+      (isHealthPath(requestPath(request)) ||
+        isMcpPath(requestPath(request))) &&
       exception instanceof HttpException
     ) {
       response.status(exception.getStatus()).json(exception.getResponse());

@@ -19,29 +19,32 @@ import {
   envFilePaths,
   loggerConfig,
   mailConfig,
-  observabilityConfig,
-  redisConfig,
-  securityConfig,
-  stripeConfig,
-  throttleConfig,
-  usageLimitsConfig,
-  validateEnv,
-} from '@config/index';
-import { HealthModule } from '@infrastructure/health/health.module';
-import { LoggerModule } from '@infrastructure/logger/logger.module';
-import { MailModule } from '@infrastructure/mail/mail.module';
-import { PrismaModule } from '@infrastructure/prisma/prisma.module';
-import { RedisModule } from '@infrastructure/redis/redis.module';
-import { AdminModule } from '@modules/admin/admin.module';
-import { AuthModule } from '@modules/auth/auth.module';
-import { BetterAuthMiddleware } from '@modules/auth/better-auth.middleware';
-import { AuthorizationModule } from '@modules/authorization/authorization.module';
-import { BillingModule } from '@modules/billing/billing.module';
-import { CreditsModule } from '@modules/credits/credits.module';
-import { MetricsModule } from '@modules/metrics/metrics.module';
-import { PlansModule } from '@modules/plans/plans.module';
-import { ThrottlingModule } from '@modules/throttling/throttling.module';
-import { UsageLimitsModule } from '@modules/usage-limits/usage-limits.module';
+    observabilityConfig,
+    mcpConfig,
+    redisConfig,
+    securityConfig,
+    stripeConfig,
+    throttleConfig,
+    usageLimitsConfig,
+    validateEnv,
+  } from '@config/index';
+  import { HealthModule } from '@infrastructure/health/health.module';
+  import { LoggerModule } from '@infrastructure/logger/logger.module';
+  import { MailModule } from '@infrastructure/mail/mail.module';
+  import { PrismaModule } from '@infrastructure/prisma/prisma.module';
+  import { RedisModule } from '@infrastructure/redis/redis.module';
+  import { AdminModule } from '@modules/admin/admin.module';
+  import { ApiKeysModule } from '@modules/api-keys/api-keys.module';
+  import { AuthModule } from '@modules/auth/auth.module';
+  import { BetterAuthMiddleware } from '@modules/auth/better-auth.middleware';
+  import { AuthorizationModule } from '@modules/authorization/authorization.module';
+  import { BillingModule } from '@modules/billing/billing.module';
+  import { CreditsModule } from '@modules/credits/credits.module';
+  import { McpModule } from '@modules/mcp/mcp.module';
+  import { MetricsModule } from '@modules/metrics/metrics.module';
+  import { PlansModule } from '@modules/plans/plans.module';
+  import { ThrottlingModule } from '@modules/throttling/throttling.module';
+  import { UsageLimitsModule } from '@modules/usage-limits/usage-limits.module';
 
 import { API_PREFIX } from './bootstrap';
 
@@ -87,6 +90,7 @@ const STRIPE_WEBHOOK_ROUTE = {
         creditsConfig,
         stripeConfig,
         observabilityConfig,
+        mcpConfig,
       ],
     }),
     EventEmitterModule.forRoot(),
@@ -101,6 +105,8 @@ const STRIPE_WEBHOOK_ROUTE = {
     UsageLimitsModule,
     CreditsModule,
     BillingModule,
+    ApiKeysModule,
+    McpModule,
     MetricsModule,
     AdminModule,
     HealthModule,
