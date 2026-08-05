@@ -12,7 +12,7 @@ import { PlanResolutionService } from './plan-resolution.service';
  * in `AppModule` **after** `AuthorizationModule` and **before**
  * `ThrottlingModule` / `UsageLimitsModule` so the chain is:
  *
- *   Auth → Permissions → Entitlements → Throttle → Usage → (credits later)
+ *   Auth → Permissions → Entitlements → Throttle → Usage → Credits
  */
 @Global()
 @Module({

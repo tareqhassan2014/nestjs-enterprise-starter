@@ -167,8 +167,8 @@ describe('Access-control schema and seed (integration)', () => {
     });
   });
 
-  describe('no speculative credit or payment models', () => {
-    it('declares plan and subscription tables but no credit ledger', async () => {
+  describe('credits and Stripe top-up models', () => {
+    it('declares wallet, ledger, and Stripe linkage without Connect/Tax tables', async () => {
       const rows = await prisma.$queryRaw<{ table_name: string }[]>`
         SELECT table_name FROM information_schema.tables
         WHERE table_schema = 'public'
@@ -181,16 +181,18 @@ describe('Access-control schema and seed (integration)', () => {
         'plan_entitlements',
         'plan_usage_limits',
         'subscriptions',
+        'credit_wallets',
+        'credit_ledger_entries',
+        'stripe_customers',
+        'stripe_processed_events',
       ]) {
         expect(names).toContain(required);
       }
 
       for (const forbidden of [
-        'credits',
-        'credit_ledger',
-        'credit_ledgers',
         'invoices',
-        'stripe_customers',
+        'stripe_connect_accounts',
+        'tax_registrations',
       ]) {
         expect(names).not.toContain(forbidden);
       }

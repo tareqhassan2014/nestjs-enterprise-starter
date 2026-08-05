@@ -3,8 +3,8 @@ import { HttpStatus } from '@nestjs/common';
 /**
  * Stable, client-facing error identifiers. Clients branch on `code`; the HTTP
  * status is transport. Codes are additive — later changes contribute their own
- * (`INSUFFICIENT_CREDITS` with the credit ledger, and so on) — but existing
- * codes are a published contract and must not be renamed or repurposed.
+ * — but existing codes are a published contract and must not be renamed or
+ * repurposed.
  */
 export const ErrorCode = {
   VALIDATION_FAILED: 'VALIDATION_FAILED',
@@ -47,6 +47,12 @@ export const ErrorCode = {
 
   /** An entitled subscription is required and none is in force. */
   SUBSCRIPTION_INACTIVE: 'SUBSCRIPTION_INACTIVE',
+
+  /**
+   * Credit wallet balance is below the cost required for the route or spend.
+   * Distinct from plan entitlements so clients can prompt a top-up.
+   */
+  INSUFFICIENT_CREDITS: 'INSUFFICIENT_CREDITS',
 } as const;
 
 export type ErrorCode = (typeof ErrorCode)[keyof typeof ErrorCode];
@@ -54,6 +60,7 @@ export type ErrorCode = (typeof ErrorCode)[keyof typeof ErrorCode];
 const STATUS_TO_CODE = new Map<number, ErrorCode>([
   [HttpStatus.BAD_REQUEST, ErrorCode.BAD_REQUEST],
   [HttpStatus.UNAUTHORIZED, ErrorCode.UNAUTHORIZED],
+  [HttpStatus.PAYMENT_REQUIRED, ErrorCode.INSUFFICIENT_CREDITS],
   [HttpStatus.FORBIDDEN, ErrorCode.FORBIDDEN],
   [HttpStatus.NOT_FOUND, ErrorCode.NOT_FOUND],
   [HttpStatus.CONFLICT, ErrorCode.CONFLICT],

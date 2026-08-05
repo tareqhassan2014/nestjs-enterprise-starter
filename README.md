@@ -22,12 +22,13 @@ Fork it and build features on top — the parts every service needs are decided 
 | Request throttling | Redis-backed Nest burst + per-minute limits; stricter on account Nest routes |
 | Usage limits | Daily/weekly Redis counters per user (and optional org) + feature; ceilings from plan matrices |
 | Plans & subscriptions | Lite / Pro / Enterprise catalogue, monthly/yearly intervals, entitlement gate, seeded limit matrices |
+| Credits & Stripe top-up | Per-user wallet + immutable ledger, `@CostsCredits` gate, Checkout Sessions for credit packs |
 | Transport security | Helmet with an API-appropriate CSP, CORS allowlist, hardened session cookies |
 | Mail | Provider-agnostic port with a recording dev adapter and an SMTP adapter |
 | Local stack | Docker Compose: app + Postgres + Redis + Mailpit, with healthchecks |
 | CI | GitHub Actions: lint, typecheck, unit, integration, build, boot smoke test, image build |
 
-Not included by design: Stripe billing, credits / pay-as-you-go ledger, and admin monitoring APIs. Those are separate changes that build on this foundation.
+Not included by design: Stripe **Subscription** Billing sync (plans stay app-owned), Connect / Tax / Customer Portal, and admin monitoring APIs.
 
 ## Requirements
 
@@ -167,7 +168,7 @@ Every application route lives under `/api/v1`. Health endpoints sit outside it s
 }
 ```
 
-Clients branch on `error.code`, not the HTTP status. Current codes: `VALIDATION_FAILED`, `BAD_REQUEST`, `UNAUTHORIZED`, `FORBIDDEN`, `NOT_FOUND`, `CONFLICT`, `RATE_LIMITED`, `USAGE_LIMIT_EXCEEDED`, `SERVICE_UNAVAILABLE`, `INTERNAL_ERROR`, `EMAIL_NOT_VERIFIED`, `TWO_FACTOR_REQUIRED`, `ACCOUNT_LOCKED`, `ENTITLEMENT_DENIED`, `SUBSCRIPTION_INACTIVE`. Codes are additive — never rename one.
+Clients branch on `error.code`, not the HTTP status. Current codes: `VALIDATION_FAILED`, `BAD_REQUEST`, `UNAUTHORIZED`, `FORBIDDEN`, `NOT_FOUND`, `CONFLICT`, `RATE_LIMITED`, `USAGE_LIMIT_EXCEEDED`, `SERVICE_UNAVAILABLE`, `INTERNAL_ERROR`, `EMAIL_NOT_VERIFIED`, `TWO_FACTOR_REQUIRED`, `ACCOUNT_LOCKED`, `ENTITLEMENT_DENIED`, `SUBSCRIPTION_INACTIVE`, `INSUFFICIENT_CREDITS`. Codes are additive — never rename one.
 
 The last three exist because each has a different remedy and a client must be able to tell them apart: verify your address, complete the second factor, or simply wait.
 
@@ -213,7 +214,9 @@ Our own auth-adjacent endpoints — `/api/v1/account/*` — are ordinary control
 
 ### Third-party webhooks
 
-The global pipe uses `forbidNonWhitelisted`, so a payload carrying fields you do not model is a `400`. That is the right default for a first-party API and the wrong one for, say, Stripe. Webhook routes need the raw body and must bypass the global pipe at the route level (`@Body()` with a raw-body parser and a per-route `@UsePipes()` override), plus `@NoEnvelope()` if the sender expects a specific response shape.
+The global pipe uses `forbidNonWhitelisted`, so a payload carrying fields you do not model is a `400`. That is the right default for a first-party API and the wrong one for Stripe.
+
+**Stripe credit top-up** already ships this pattern: `POST /api/v1/billing/webhook` is served with a raw body (`express.raw`), verifies `Stripe-Signature`, uses `@Public()` + `@NoEnvelope()`, and acknowledges with `{ "received": true }` — **outside** the success envelope (same class of boundary as Better Auth). Invalid signatures are rejected without granting credits.
 
 ## Authentication
 
@@ -236,6 +239,11 @@ First-party endpoints, inside the envelope:
 | --- | --- |
 | Current principal, roles, permissions | `GET /api/v1/account/me` |
 | Current plan, entitlements, usage ceilings | `GET /api/v1/billing/plan` |
+| Credit balance | `GET /api/v1/billing/credits` |
+| Recent credit ledger | `GET /api/v1/billing/credits/ledger?limit=20` |
+| Start credit pack Checkout | `POST /api/v1/billing/checkout` `{ "pack": "starter" }` |
+| Demo paid route (`@CostsCredits`) | `POST /api/v1/billing/demo/paid` |
+| Stripe webhook (no envelope) | `POST /api/v1/billing/webhook` |
 | List own sessions | `GET /api/v1/account/sessions` |
 | Revoke one own session | `DELETE /api/v1/account/sessions/:id` |
 | Revoke all but current | `POST /api/v1/account/sessions/revoke-others` |
@@ -320,12 +328,12 @@ PermissionsGuard     → decides whether that principal may proceed, or 403 FORB
 EntitlementsGuard    → commercial plan gates (@RequireEntitlement / @RequirePlan), or 403 ENTITLEMENT_DENIED
 AppThrottlerGuard    → Nest burst / per-minute (Redis), or 429 RATE_LIMITED
 UsageLimitsGuard     → optional @UsageLimit, or 429 USAGE_LIMIT_EXCEEDED
-[reserved]             credit checks
+CreditsGuard         → optional @CostsCredits, or 402 INSUFFICIENT_CREDITS
 ```
 
-Order is the contract. Auth and Permissions register in `AuthorizationModule`; plans, throttling, and usage register in modules imported after it in `AppModule` (in that order). Later stages append **after** authorization and must consume the principal `AuthGuard` already resolved rather than re-resolving the session.
+Order is the contract. Auth and Permissions register in `AuthorizationModule`; plans, throttling, usage, and credits register in modules imported after it in `AppModule` (in that order). Later stages append **after** authorization and must consume the principal `AuthGuard` already resolved rather than re-resolving the session.
 
-A RBAC `403` (`FORBIDDEN`) says only that you were refused. It never enumerates which permissions were required or missing — that would describe the policy to an attacker. Plan denials use `ENTITLEMENT_DENIED` (or `SUBSCRIPTION_INACTIVE` when that classification applies) so clients can show upgrade / renew UI instead of a generic permission error. The full reason is logged with the request id and the user id.
+A RBAC `403` (`FORBIDDEN`) says only that you were refused. It never enumerates which permissions were required or missing — that would describe the policy to an attacker. Plan denials use `ENTITLEMENT_DENIED` (or `SUBSCRIPTION_INACTIVE` when that classification applies) so clients can show upgrade / renew UI instead of a generic permission error. Insufficient balance uses `402` + `INSUFFICIENT_CREDITS` so clients can prompt a top-up. The full reason is logged with the request id and the user id.
 
 ## Plans and subscriptions
 
@@ -343,7 +351,29 @@ Commercial packaging is first-class: **Lite**, **Pro**, and optional **Enterpris
 
 **Usage ceilings** prefer the effective plan's `plan_usage_limits` row for a catalogue feature; otherwise they fall back to `USAGE_LIMIT_*` env defaults.
 
-Stripe Checkout, webhooks, and the credit ledger are **not** included — nullable Stripe id columns exist for a later billing change.
+Stripe **Subscription** objects do not drive plan status here — Checkout in this starter is for **credit top-up only** (see below). Nullable Stripe id columns on `subscriptions` remain for forks that add Billing sync later.
+
+## Credits and Stripe top-up
+
+Pay-as-you-go credits sit **after** usage limits in the guard chain.
+
+| Piece | Where |
+| --- | --- |
+| Cost catalogue | `src/modules/credits/credit-costs.ts` (`CREDIT_COSTS`) |
+| Ledger + wallet | `CreditService` — `grant` / `spend` / `refund` / `adjust`, each with an idempotency key |
+| Gate | `@CostsCredits('demo.paid')` — pre-handler spend; compensating refund if the handler throws |
+| Balance API | `GET /api/v1/billing/credits` (optional `…/ledger`) |
+| Demo | `POST /api/v1/billing/demo/paid` |
+| Checkout | `POST /api/v1/billing/checkout` with a configured pack slug |
+| Webhook | `POST /api/v1/billing/webhook` — raw body, no success envelope |
+
+**Idempotency:** ledger keys are unique. Guard spends use `spend:{requestId}:{feature}`; Stripe grants use `stripe:checkout:{sessionId}` so webhook retries never double-credit. Pack credit amounts come from **server config**, not from client-supplied metadata alone.
+
+**Stripe config** is optional as a group (`STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`, `STRIPE_CREDIT_PACKS`). Absent → ledger and `@CostsCredits` still work; Checkout returns `503 SERVICE_UNAVAILABLE`. Prefer a restricted key (`rk_`) in real deployments. Packs are `slug:credits:priceId` comma-separated. API version follows the installed Stripe Node SDK (`2026-07-29.dahlia` for stripe@22).
+
+Optional `CREDITS_LOW_BALANCE_THRESHOLD` emits a `credits.low_balance` event after a spend that crosses it — no mail/queue wiring in the starter.
+
+**Not included:** Connect, Tax, Customer Portal, Stripe PaymentIntent refunds as product refunds, org wallets, or driving subscription `past_due` / cancel from invoices.
 
 ## Two-factor authentication
 

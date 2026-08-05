@@ -10,6 +10,17 @@ export {
   usageLimitsConfig,
   type UsageLimitsConfig,
 } from './usage-limits.config';
+export { creditsConfig, type CreditsConfig } from './credits.config';
+export {
+  STRIPE_API_VERSION,
+  stripeConfig,
+  type StripeConfig,
+} from './stripe.config';
 export { envFilePaths } from './env-files';
-export { type Env, envSchema, PLACEHOLDER_AUTH_SECRET } from './env.schema';
+export {
+  type Env,
+  envSchema,
+  parseStripeCreditPacks,
+  PLACEHOLDER_AUTH_SECRET,
+} from './env.schema';
 export { getEnv, resetEnvCache, validateEnv } from './env.validation';

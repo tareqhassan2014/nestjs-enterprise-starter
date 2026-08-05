@@ -18,9 +18,9 @@ import { PermissionsGuard } from './permissions.guard';
  *   3. `EntitlementsGuard`   — commercial plan gates (registered in PlansModule)
  *   4. `AppThrottlerGuard`   — Nest burst/per-minute (registered in ThrottlingModule)
  *   5. `UsageLimitsGuard`    — optional `@UsageLimit` (registered in UsageLimitsModule)
- *   6. reserved: credit checks
+ *   6. `CreditsGuard`        — `@CostsCredits` wallet debit (registered in CreditsModule)
  *
- * Stages 3–5 live in modules imported **after** this one in `AppModule`, so Nest
+ * Stages 3–6 live in modules imported **after** this one in `AppModule`, so Nest
  * appends their `APP_GUARD` providers after Auth and Permissions. Each stage must
  * **consume the principal `AuthGuard` already resolved** rather than resolving
  * the session again — one resolution per request is what keeps the cost of the

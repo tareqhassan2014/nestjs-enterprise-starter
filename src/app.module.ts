@@ -2,9 +2,11 @@ import {
   type MiddlewareConsumer,
   Module,
   type NestModule,
+  RequestMethod,
 } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
-import { json, urlencoded } from 'express';
+import { EventEmitterModule } from '@nestjs/event-emitter';
+import { json, raw, urlencoded } from 'express';
 
 import { CommonModule } from '@common/common.module';
 import { RequestContextMiddleware } from '@common/middleware/request-context.middleware';
@@ -12,12 +14,14 @@ import {
   appConfig,
   AUTH_BASE_PATH,
   authConfig,
+  creditsConfig,
   databaseConfig,
   envFilePaths,
   loggerConfig,
   mailConfig,
   redisConfig,
   securityConfig,
+  stripeConfig,
   throttleConfig,
   usageLimitsConfig,
   validateEnv,
@@ -30,6 +34,8 @@ import { RedisModule } from '@infrastructure/redis/redis.module';
 import { AuthModule } from '@modules/auth/auth.module';
 import { BetterAuthMiddleware } from '@modules/auth/better-auth.middleware';
 import { AuthorizationModule } from '@modules/authorization/authorization.module';
+import { BillingModule } from '@modules/billing/billing.module';
+import { CreditsModule } from '@modules/credits/credits.module';
 import { PlansModule } from '@modules/plans/plans.module';
 import { ThrottlingModule } from '@modules/throttling/throttling.module';
 import { UsageLimitsModule } from '@modules/usage-limits/usage-limits.module';
@@ -52,6 +58,12 @@ const AUTH_ROUTE_PATTERN = `${AUTH_BASE_PATH.replace(
   '',
 )}/{*splat}`;
 
+/** Stripe webhook under URI versioning — raw body required for signatures. */
+const STRIPE_WEBHOOK_ROUTE = {
+  path: 'v1/billing/webhook',
+  method: RequestMethod.POST,
+} as const;
+
 @Module({
   imports: [
     ConfigModule.forRoot({
@@ -69,8 +81,11 @@ const AUTH_ROUTE_PATTERN = `${AUTH_BASE_PATH.replace(
         mailConfig,
         throttleConfig,
         usageLimitsConfig,
+        creditsConfig,
+        stripeConfig,
       ],
     }),
+    EventEmitterModule.forRoot(),
     LoggerModule,
     PrismaModule,
     RedisModule,
@@ -80,6 +95,8 @@ const AUTH_ROUTE_PATTERN = `${AUTH_BASE_PATH.replace(
     PlansModule,
     ThrottlingModule,
     UsageLimitsModule,
+    CreditsModule,
+    BillingModule,
     HealthModule,
     CommonModule,
   ],
@@ -93,10 +110,8 @@ export class AppModule implements NestModule {
    *      after it — including the auth router — logs under one request id.
    *   2. `BetterAuthMiddleware` serves `/api/auth/*` and ends the response. It
    *      must see an *unparsed* body, which is why it precedes the parsers.
-   *   3. The body parsers cover every other path. They are registered here
-   *      rather than by Nest itself (`bodyParser: false` in `APP_OPTIONS`)
-   *      because Nest registers its own before module middleware, which would
-   *      consume the auth body before step 2 could read it.
+   *   3. Stripe webhook gets `express.raw` so signature verification sees bytes.
+   *   4. JSON / urlencoded cover every other path (auth + webhook excluded).
    *
    * `nestjs-pino`'s request logger is applied by `LoggerModule`, which is
    * imported ahead of this module's own `configure`, so it stays between the
@@ -107,9 +122,11 @@ export class AppModule implements NestModule {
 
     consumer.apply(BetterAuthMiddleware).forRoutes(`${AUTH_ROUTE_PATTERN}`);
 
+    consumer.apply(raw({ type: 'application/json' })).forRoutes(STRIPE_WEBHOOK_ROUTE);
+
     consumer
       .apply(json({ limit: '1mb' }), urlencoded({ extended: true }))
-      .exclude(AUTH_ROUTE_PATTERN)
+      .exclude(AUTH_ROUTE_PATTERN, STRIPE_WEBHOOK_ROUTE.path)
       .forRoutes('{*splat}');
   }
 }

@@ -271,6 +271,32 @@ const envObjectSchema = z.object({
   USAGE_LIMIT_DEMO_WEEKLY: z.coerce.number().int().positive().default(500),
 
   // ---------------------------------------------------------------------------
+  // Credits & Stripe top-up (Stripe group is all-or-nothing)
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Optional low-balance threshold. When set, spends that leave the wallet at
+   * or below this value emit a `credits.low_balance` event for forks to hook.
+   */
+  CREDITS_LOW_BALANCE_THRESHOLD: z.preprocess(
+    blankAsAbsent,
+    z.coerce.number().int().nonnegative().optional(),
+  ),
+
+  /** Stripe secret or restricted key (`sk_` / `rk_`). */
+  STRIPE_SECRET_KEY: optionalString,
+  STRIPE_WEBHOOK_SECRET: optionalString,
+  /**
+   * Credit packs as `slug:credits:priceId` entries, comma-separated.
+   * Example: `starter:100:price_xxx,boost:500:price_yyy`
+   */
+  STRIPE_CREDIT_PACKS: optionalString,
+  /** Override Checkout success URL; defaults to `{APP_URL}/billing/success`. */
+  STRIPE_SUCCESS_URL: optionalString,
+  /** Override Checkout cancel URL; defaults to `{APP_URL}/billing/cancel`. */
+  STRIPE_CANCEL_URL: optionalString,
+
+  // ---------------------------------------------------------------------------
   // Transport security
   // ---------------------------------------------------------------------------
 
@@ -304,7 +330,61 @@ type EnvShape = z.infer<typeof envObjectSchema>;
 const CREDENTIAL_GROUPS: Record<string, readonly (keyof EnvShape)[]> = {
   'Google OAuth': ['GOOGLE_CLIENT_ID', 'GOOGLE_CLIENT_SECRET'],
   'Apple OAuth': ['APPLE_CLIENT_ID', 'APPLE_CLIENT_SECRET'],
+  'Stripe top-up': [
+    'STRIPE_SECRET_KEY',
+    'STRIPE_WEBHOOK_SECRET',
+    'STRIPE_CREDIT_PACKS',
+  ],
 };
+
+/**
+ * Parse `slug:credits:priceId` comma-separated pack definitions.
+ * Exported for the stripe config namespace and tests.
+ */
+export function parseStripeCreditPacks(
+  raw: string,
+): Array<{ slug: string; credits: number; priceId: string }> {
+  const packs: Array<{ slug: string; credits: number; priceId: string }> = [];
+
+  for (const part of raw.split(',')) {
+    const entry = part.trim();
+    if (entry === '') {
+      continue;
+    }
+
+    const segments = entry.split(':');
+    if (segments.length !== 3) {
+      throw new Error(
+        `invalid pack "${entry}" — expected slug:credits:priceId`,
+      );
+    }
+
+    const [slug, creditsRaw, priceId] = segments;
+    const credits = Number(creditsRaw);
+
+    if (!slug || !priceId || !Number.isInteger(credits) || credits <= 0) {
+      throw new Error(
+        `invalid pack "${entry}" — credits must be a positive integer`,
+      );
+    }
+
+    packs.push({ slug, credits, priceId });
+  }
+
+  if (packs.length === 0) {
+    throw new Error('must declare at least one pack');
+  }
+
+  const slugs = new Set<string>();
+  for (const pack of packs) {
+    if (slugs.has(pack.slug)) {
+      throw new Error(`duplicate pack slug "${pack.slug}"`);
+    }
+    slugs.add(pack.slug);
+  }
+
+  return packs;
+}
 
 const SMTP_GROUP = [
   'SMTP_HOST',
@@ -343,6 +423,41 @@ export const envSchema = envObjectSchema.superRefine((env, ctx) => {
           message: `is required because ${groupName} is partially configured — supply every variable in the group (${members.join(', ')}) or none of them`,
         });
       }
+    }
+  }
+
+  if (env.STRIPE_CREDIT_PACKS !== undefined) {
+    try {
+      parseStripeCreditPacks(env.STRIPE_CREDIT_PACKS);
+    } catch (error) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['STRIPE_CREDIT_PACKS'],
+        message:
+          error instanceof Error
+            ? error.message
+            : 'must be comma-separated slug:credits:priceId entries',
+      });
+    }
+  }
+
+  for (const urlName of ['STRIPE_SUCCESS_URL', 'STRIPE_CANCEL_URL'] as const) {
+    const value = env[urlName];
+    if (value === undefined) {
+      continue;
+    }
+
+    try {
+      const url = new URL(value);
+      if (url.protocol !== 'http:' && url.protocol !== 'https:') {
+        throw new Error('bad protocol');
+      }
+    } catch {
+      ctx.addIssue({
+        code: 'custom',
+        path: [urlName],
+        message: 'must be an absolute http(s) URL',
+      });
     }
   }
 

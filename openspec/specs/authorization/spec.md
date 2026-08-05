@@ -92,7 +92,7 @@ Access control SHALL run as an ordered chain: authentication resolves the princi
 
 Authorization MUST NOT re-resolve the session; it consumes the principal established by authentication. The chain's ordering SHALL be: authentication, authorization, plan entitlements, request throttling, usage limits, then credit checks — extending in that order rather than introducing a parallel mechanism.
 
-Plan entitlement, request throttling, and usage-limit stages MUST consume the already-resolved principal, and MUST NOT perform their own session lookup.
+Plan entitlement, request throttling, usage-limit, and credit-check stages MUST consume the already-resolved principal, and MUST NOT perform their own session lookup.
 
 #### Scenario: Unauthenticated request to a permission-gated route
 
@@ -127,7 +127,17 @@ Plan entitlement, request throttling, and usage-limit stages MUST consume the al
 #### Scenario: Usage limits run after throttling
 
 - **WHEN** the guard registration order is inspected
-- **THEN** request throttling is registered after plan entitlements and before usage-limit enforcement, and both appear before any credit check
+- **THEN** request throttling is registered after plan entitlements and before usage-limit enforcement, and both appear before credit checks
+
+#### Scenario: Credit checks run after usage limits
+
+- **WHEN** the guard registration order is inspected
+- **THEN** credit checks are registered after usage-limit enforcement
+
+#### Scenario: Usage denial does not debit credits
+
+- **WHEN** an authenticated user who would also lack credits hits a route that is over a usage ceiling and annotated to cost credits
+- **THEN** the response is `429` with error code `USAGE_LIMIT_EXCEEDED` and no credit spend is required for that rejected request
 
 ### Requirement: Route requirements are declared by annotation
 
