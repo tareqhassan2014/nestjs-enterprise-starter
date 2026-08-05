@@ -59,7 +59,8 @@ Not included by design: Stripe **Subscription** Billing sync (plans stay app-own
 
 ## Requirements
 
-- Node.js 22.12+ — the floor is not arbitrary: `better-auth` is ESM-only and this project compiles to CommonJS, so it is loaded through Node's `require(esm)`, unflagged only from 22.12
+- Node.js 22.12+ to **run** the app — the floor is not arbitrary: `better-auth` is ESM-only and this project compiles to CommonJS, so it is loaded through Node's `require(esm)`, unflagged only from 22.12
+- Node.js 24.9+ to **run the test suites** — a Jest constraint, not the app's; see [Testing](#testing)
 - pnpm 11+ (`corepack enable`)
 - Docker (for Postgres and Redis)
 
@@ -162,19 +163,38 @@ src/
     errors/         # error codes, ApiException
     filters/        # global exception filter
     http/           # envelope types, health route constants
+    idempotency/    # @Idempotent() + replay interceptor
     interceptors/   # response envelope
     middleware/     # request context
     pipes/          # validation pipe factory
   config/           # env schema + typed namespaces (only place reading process.env)
-  infrastructure/   # technical adapters: prisma/, redis/, logger/, health/, mail/
-  modules/
+  infrastructure/   # technical adapters, swappable without touching business logic
+    health/         # Terminus indicators
+    logger/         # Pino
+    mail/           # MailerService port + log / SMTP adapters
+    openapi/        # Swagger document + auth decorators
+    prisma/         # PrismaService
+    redis/          # shared ioredis client
+    storage/        # ObjectStorage port + local / S3 adapters
+  modules/          # exists because the product needs it
+    admin/          # operator surface: usage, billing inspection, audit
+    api-keys/       # agent API keys (hashed, shown once)
     auth/           # Better Auth instance + mount, AuthGuard, account & 2FA endpoints
     authorization/  # permission catalogue, resolver + cache, PermissionsGuard
-    …               # your feature modules go here
+    billing/        # Stripe Checkout + webhook
+    credits/        # wallet, ledger, @CostsCredits
+    feature-flags/  # catalogue + layered overrides
+    mcp/            # Streamable HTTP MCP server and tool catalogue
+    metrics/        # Prometheus registry and /metrics
+    organizations/  # orgs, membership, BillingSubject resolution
+    plans/          # entitlements, plan resolution, EntitlementsGuard
+    queues/         # BullMQ queues, processors, drain-on-shutdown
+    throttling/     # Redis-backed burst / per-minute guard
+    usage-limits/   # daily / weekly counters and @UsageLimit
   generated/        # Prisma client (gitignored)
 ```
 
-`infrastructure/` holds what could be swapped without touching business logic. `modules/` holds what exists because the product needs it.
+The split is the rule for where new code goes: if it could be swapped for another vendor without touching business logic, it is infrastructure; if it exists because the product needs it, it is a module.
 
 ## API contract
 
@@ -204,9 +224,18 @@ Every application route lives under `/api/v1`. Health endpoints sit outside it s
 }
 ```
 
-Clients branch on `error.code`, not the HTTP status. Current codes: `VALIDATION_FAILED`, `BAD_REQUEST`, `UNAUTHORIZED`, `FORBIDDEN`, `NOT_FOUND`, `CONFLICT`, `RATE_LIMITED`, `USAGE_LIMIT_EXCEEDED`, `SERVICE_UNAVAILABLE`, `INTERNAL_ERROR`, `EMAIL_NOT_VERIFIED`, `TWO_FACTOR_REQUIRED`, `ACCOUNT_LOCKED`, `ENTITLEMENT_DENIED`, `SUBSCRIPTION_INACTIVE`, `INSUFFICIENT_CREDITS`. Codes are additive — never rename one.
+Clients branch on `error.code`, not the HTTP status. The catalogue is `src/common/errors/error-code.ts`, grouped by the decision a client has to make:
 
-The last three exist because each has a different remedy and a client must be able to tell them apart: verify your address, complete the second factor, or simply wait.
+| Group | Codes |
+| --- | --- |
+| Generic | `VALIDATION_FAILED`, `BAD_REQUEST`, `UNAUTHORIZED`, `FORBIDDEN`, `NOT_FOUND`, `CONFLICT`, `RATE_LIMITED`, `USAGE_LIMIT_EXCEEDED`, `SERVICE_UNAVAILABLE`, `INTERNAL_ERROR` |
+| Authentication | `EMAIL_NOT_VERIFIED`, `TWO_FACTOR_REQUIRED`, `ACCOUNT_LOCKED` |
+| Commercial | `ENTITLEMENT_DENIED`, `SUBSCRIPTION_INACTIVE`, `INSUFFICIENT_CREDITS` |
+| Idempotency | `IDEMPOTENCY_KEY_REQUIRED`, `IDEMPOTENCY_KEY_REUSE` |
+
+Codes are additive — never rename or repurpose one.
+
+The three authentication codes are all distinct from `UNAUTHORIZED` ("no usable session was presented") because each has a different remedy and a client must be able to tell them apart: verify your address, complete the second factor, or simply wait. The commercial ones are split off `FORBIDDEN` for the same reason — upgrade, renew, or top up are three different screens.
 
 Internal errors never leak: stack traces, SQL, and connection strings are logged with the request ID and replaced by a generic message in the response.
 
@@ -254,6 +283,65 @@ The global pipe uses `forbidNonWhitelisted`, so a payload carrying fields you do
 
 **Stripe credit top-up** already ships this pattern: `POST /api/v1/billing/webhook` is served with a raw body (`express.raw`), verifies `Stripe-Signature`, uses `@Public()` + `@NoEnvelope()`, and acknowledges with `{ "received": true }` — **outside** the success envelope (same class of boundary as Better Auth). Invalid signatures are rejected without granting credits.
 
+## Endpoint map
+
+The whole HTTP surface. Everything under `/api/v1` is an ordinary Nest controller: session required, response in the envelope, unless the row says otherwise. Credential flows live on Better Auth's own router — see [Authentication](#authentication).
+
+### Account (`/api/v1/account`)
+
+| Purpose | Endpoint |
+| --- | --- |
+| Current principal, roles, permissions | `GET /me` |
+| List own sessions | `GET /sessions` |
+| Revoke one own session | `DELETE /sessions/:id` |
+| Revoke all but current | `POST /sessions/revoke-others` |
+| 2FA status (incl. remaining backup codes) | `GET /two-factor` |
+| Enable / confirm / disable 2FA | `POST /two-factor/enable`, `…/verify`, `…/disable` |
+| Re-issue backup codes | `POST /two-factor/backup-codes` |
+| Create / list / revoke agent API keys | `POST` / `GET` `/api-keys`, `DELETE /api-keys/:id` |
+
+### Billing (`/api/v1/billing`)
+
+| Purpose | Endpoint |
+| --- | --- |
+| Current plan, entitlements, usage ceilings | `GET /plan` |
+| Credit balance | `GET /credits` |
+| Recent credit ledger | `GET /credits/ledger?limit=20` |
+| Start credit pack Checkout (`Idempotency-Key`) | `POST /checkout` `{ "pack": "starter" }` |
+| Demo paid route (`@CostsCredits`) | `POST /demo/paid` |
+
+### Organizations (`/api/v1/organizations`)
+
+| Purpose | Endpoint |
+| --- | --- |
+| Create org (`Idempotency-Key`) / list mine | `POST` / `GET` `/` |
+| List / add / remove members | `GET` / `POST` `/:organizationId/members`, `DELETE /:organizationId/members/:userId` |
+
+### Admin (`/api/v1/admin`)
+
+Permission-gated — see [Admin monitoring](#admin-monitoring).
+
+| Purpose | Endpoint |
+| --- | --- |
+| Usage pressure / top 429s | `GET /usage/pressure`, `…/top-429` |
+| One user's usage snapshot | `GET /usage/users/:userId` |
+| One user's subscription / credits | `GET /users/:userId/subscription`, `…/credits` |
+| Grant / adjust credits (adjust is idempotent) | `POST /users/:userId/credits/grant`, `…/adjust` |
+| Admin action audit list | `GET /audit` |
+
+### Outside `/api/v1`, outside the envelope
+
+Each for a reason given above:
+
+| Purpose | Endpoint |
+| --- | --- |
+| Liveness / readiness | `GET /health/live`, `GET /health/ready` |
+| Better Auth router | `/api/auth/*` |
+| MCP Streamable HTTP | `POST /mcp` — Bearer API key only |
+| Stripe webhook | `POST /api/v1/billing/webhook` — raw body, `@Public()` |
+| Prometheus scrape | `GET /metrics` (when `METRICS_ENABLED`) |
+| OpenAPI UI | `GET /docs` (when `SWAGGER_ENABLED`) |
+
 ## Authentication
 
 Better Auth, mounted at `/api/auth/*` and backed by the same Prisma client and Redis as everything else.
@@ -268,31 +356,6 @@ Better Auth, mounted at `/api/auth/*` and backed by the same Prisma client and R
 | Complete reset | `POST /api/auth/reset-password` |
 | Social sign-in | `POST /api/auth/sign-in/social` (`provider: "google" \| "apple"`) |
 | 2FA challenge | `POST /api/auth/two-factor/verify-totp`, `…/verify-backup-code` |
-
-First-party endpoints, inside the envelope:
-
-| Purpose | Endpoint |
-| --- | --- |
-| Current principal, roles, permissions | `GET /api/v1/account/me` |
-| Create / list / revoke agent API keys | `POST\|GET\|DELETE /api/v1/account/api-keys` |
-| MCP Streamable HTTP (no envelope) | `POST /mcp` — Bearer API key only |
-| Current plan, entitlements, usage ceilings | `GET /api/v1/billing/plan` |
-| Credit balance | `GET /api/v1/billing/credits` |
-| Recent credit ledger | `GET /api/v1/billing/credits/ledger?limit=20` |
-| Start credit pack Checkout | `POST /api/v1/billing/checkout` `{ "pack": "starter" }` |
-| Demo paid route (`@CostsCredits`) | `POST /api/v1/billing/demo/paid` |
-| Stripe webhook (no envelope) | `POST /api/v1/billing/webhook` |
-| Admin usage pressure / top 429s | `GET /api/v1/admin/usage/pressure`, `…/top-429` |
-| Admin user usage / subscription / credits | `GET /api/v1/admin/users/:userId/…` |
-| Admin credit grant / adjust | `POST /api/v1/admin/users/:userId/credits/grant\|adjust` |
-| Admin audit list | `GET /api/v1/admin/audit` |
-| Prometheus scrape (no envelope) | `GET /metrics` |
-| OpenAPI UI | `GET /docs` (when enabled) |
-| List own sessions | `GET /api/v1/account/sessions` |
-| Revoke one own session | `DELETE /api/v1/account/sessions/:id` |
-| Revoke all but current | `POST /api/v1/account/sessions/revoke-others` |
-| 2FA status / enable / verify / disable | `GET|POST /api/v1/account/two-factor…` |
-| Re-issue backup codes | `POST /api/v1/account/two-factor/backup-codes` |
 
 ### Sessions
 
@@ -335,7 +398,17 @@ curl -X POST "$APP_URL/api/v1/account/api-keys" \
 
 The response includes the plaintext secret **once** (`nes_…`). Store it in the client; list/revoke never return it again.
 
-**Tools** are thin adapters over existing services (profile, plan, credits, usage, plus a demo credit-gated tool). Every tool call runs **API key → RBAC → plan → Redis MCP throttle → usage → credits → adapter**. There is no second business layer.
+**Tools** are thin adapters over existing services — declared in `src/modules/mcp/mcp-tool-catalog.ts`:
+
+| Tool | Backed by |
+| --- | --- |
+| `account.get_profile` | the same principal `GET /api/v1/account/me` returns |
+| `plans.get_current` | `PlanResolutionService` |
+| `credits.get_balance`, `credits.list_ledger` | `CreditService` |
+| `usage.get_snapshot` | `UsageLimitsService` |
+| `demo.paid_ping` | the credit-gated demo, to show metering end to end |
+
+Every tool call runs **API key → RBAC → plan → Redis MCP throttle → usage → credits → adapter**. There is no second business layer.
 
 **Non-goals:** session-cookie MCP auth, OAuth dynamic client registration, org-level keys, auto-generating a tool per HTTP route.
 
@@ -425,7 +498,7 @@ Effective permission sets are cached in Redis and invalidated by **advancing a v
 
 **Anything that mutates roles, mappings, or assignments must advance the marker.** In the application, call `PermissionResolver.invalidate()`. From a script or one-off tool — anything with no Nest container — call `advancePermissionVersion(redis)` from `src/modules/authorization/permission-cache-version.ts`. `pnpm db:seed` already does this, and warns rather than fails if Redis is unreachable (a fresh database with no Redis running is normal; there is no cache to invalidate).
 
-If a mutation is applied *without* advancing the marker — editing `role_permissions` directly in the database, for instance — a running instance keeps serving the old grants until its cached entries expire. **The worst case is `PERMISSION_CACHE_TTL_SECONDS` (300 s).** That is the documented staleness bound; it is not a per-request cache, so the window is real.
+If a mutation is applied *without* advancing the marker — editing `role_permissions` directly in the database, for instance — a running instance keeps serving the old grants until its cached entries expire. **The worst case is `PERMISSION_CACHE_TTL_SECONDS` (300 s)**, a code constant in `permission-cache-version.ts` rather than an env knob. That is the documented staleness bound; it is not a per-request cache, so the window is real.
 
 ### The guard chain
 
@@ -470,7 +543,7 @@ Billing, credits, and plans are resolved against a **`BillingSubject`** — eith
 | Service | `OrganizationsService` — `create`, `listMine`, `addMember`, `removeMember` (role checks; the last `owner` cannot be removed) |
 | API | `POST /api/v1/organizations` (idempotent), `GET /api/v1/organizations` (mine), member add/list/remove under `/api/v1/organizations/:organizationId/members` |
 | Binding | `X-Organization-Id` header → `OrganizationContextGuard` verifies membership, then publishes `organizationId` on `RequestContext` |
-| Billing subject | `BillingSubjectResolver` — no org header → `{ type: 'user' }`; org header + membership + `billingMode: organization` → `{ type: 'organization' }` |
+| Billing subject | `BillingSubjectResolver` — org-primary requires **all three** of: an org-bound request (membership already verified), `billingMode: organization`, and the `org.billing` flag enabled for that user/org. Any one missing → `{ type: 'user' }` |
 
 `CreditService` and `PlanResolutionService` both accept a `BillingSubject | string` (the plain string is kept for call sites that only ever dealt in `userId`), so a fork can turn on org billing for a route by resolving and passing a subject — no signature break for the rest of the app. `CreditWallet`, `CreditLedgerEntry`, and `Subscription` all use a DB check constraint enforcing exactly one of `userId` / `organizationId`.
 
@@ -509,7 +582,14 @@ A completed-but-unpaid session is acknowledged with `200` and logged at `warn` (
 
 **Stripe config** is optional as a group (`STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`, `STRIPE_CREDIT_PACKS`). Absent → ledger and `@CostsCredits` still work; Checkout returns `503 SERVICE_UNAVAILABLE`. Prefer a restricted key (`rk_`) in real deployments. Packs are `slug:credits:priceId` comma-separated. API version follows the installed Stripe Node SDK (`2026-07-29.dahlia` for stripe@22).
 
-`CREDITS_LOW_BALANCE_THRESHOLD` emits a `credits.low_balance` event after **any debit** that crosses it — a metered spend or an operator's negative adjust, since either strands the customer. `LowBalanceEmailListener` bridges that event to the `email` queue — behind the `email.low_balance` feature flag or `EMAIL_LOW_BALANCE_ENABLED` — and resolves the recipient from the subject (the user themselves, or the organization's oldest `owner`).
+`CREDITS_LOW_BALANCE_THRESHOLD` emits a `credits.low_balance` event after **any debit** that crosses it — a metered spend or an operator's negative adjust, since either strands the customer. `LowBalanceEmailListener` bridges that event to the `email` queue and resolves the recipient from the subject (the user themselves, or the organization's oldest `owner`).
+
+The bridge is off by default and has **two independent switches, OR'd** — either one enables it:
+
+| Switch | Scope |
+| --- | --- |
+| `email.low_balance` feature flag (env default `FEATURE_FLAG_EMAIL_LOW_BALANCE`) | Overridable per user / per org via `FeatureFlagOverride` |
+| `EMAIL_LOW_BALANCE_ENABLED` | Blunt global toggle, for forks that would rather not write override rows at all |
 
 **Not included:** Connect, Tax, Customer Portal, Stripe PaymentIntent refunds as product refunds, or driving subscription `past_due` / cancel from invoices.
 
@@ -550,7 +630,7 @@ Recovery: `GET /api/v1/account/two-factor` reports how many codes remain, so a u
 
 Three layers, because they solve different problems.
 
-**Per-address rate limits on `/api/auth/*`** (Better Auth’s Redis limiter), tighter on sign-in, sign-up, reset, and 2FA verification. Counters live in Redis, so limits hold across instances. Boot fails if the credential paths are not configured strictly than the general auth surface, so the guarantee survives edited values.
+**Per-address rate limits on `/api/auth/*`** (Better Auth’s Redis limiter), tighter on sign-in, sign-up, reset, and 2FA verification. Counters live in Redis, so limits hold across instances. Boot fails if the credential paths are not configured more strictly than the general auth surface, so the guarantee survives edited values.
 
 **Nest burst + per-minute throttling on application routes** (`@nestjs/throttler` on the shared Redis client). Named windows (`burst`, `minute`) apply per **policy** per tracker: authenticated callers key by `user:{id}`, anonymous by IP, and keys carry a `default` / `strict` segment. First-party account / session / 2FA controllers under `/api/v1` use the stricter policy; `/health/*` skips throttling. This limiter does **not** wrap `/api/auth/*` — that surface stays on Better Auth’s rules. Exhaustion returns enveloped `429` with `RATE_LIMITED` and `Retry-After`. Redis failures fail closed as `503 SERVICE_UNAVAILABLE`.
 
@@ -619,7 +699,16 @@ A small layered override system, not a full flag-management product.
 
 Resolution order (first match wins): **per-user DB override → per-organization DB override → global DB override → env default → code default.** Flags are declared once in `src/modules/feature-flags/feature-flags.catalogue.ts` (`FeatureFlagKey`); passing an undeclared key is a type error at compile time and a rejected call at runtime.
 
-`FeatureFlagsService.setOverride(key, enabled, { userId? , organizationId? })` writes a `FeatureFlagOverride` row; omitting both scopes it globally. Currently used internally by `email.low_balance` (gates the low-balance → email bridge) — `org.billing` is declared for forks that want to stage org billing per-tenant before flipping it everywhere.
+`FeatureFlagsService.setOverride(key, enabled, { userId? , organizationId? })` writes a `FeatureFlagOverride` row; omitting both scopes it globally.
+
+Two flags ship declared, and both are load-bearing:
+
+| Flag | Code default | Effect |
+| --- | --- | --- |
+| `email.low_balance` | `false` | Gates the `credits.low_balance` → `email` queue bridge |
+| `org.billing` | `true` | Master switch for org-primary billing. `BillingSubjectResolver` checks it per user/org, so a fork can stage org billing tenant by tenant — or switch every org back to user-billing with one global override |
+
+Because `org.billing` is evaluated per request against a real subject, turning it off does not corrupt anything: spends and usage simply resolve to the calling user again. What it does *not* do is move credits already debited from an org wallet.
 
 ## Request idempotency
 
@@ -682,7 +771,13 @@ pnpm test:e2e    # e2e + integration — needs Postgres and Redis
 
 Integration tests run against real Postgres and Redis, not mocks — that is what makes the health checks, Prisma error mapping, and shutdown behavior meaningful. The auth suites go through the real HTTP surface too: they register, read the verification link out of the recorded mail, sign in, and assert on actual cookies.
 
+### The suites need Node 24.9+, the app does not
+
 `NODE_OPTIONS=--experimental-vm-modules` in the `test*` scripts is **load-bearing, not incidental**. `better-auth` is ESM-only; ts-jest compiles tests to CommonJS; Jest's module registry intercepts the require before Node's `require(esm)` can bridge them. Drop the flag and every auth test fails at import with `SyntaxError: Cannot use import statement outside a module`. `src/modules/auth/better-auth-esm.spec.ts` is the regression guard.
+
+The flag is necessary but **not sufficient on Node 22**: because Jest has to supply the ESM bridge itself, it needs the synchronous `vm` APIs added in **Node 24.9**, and below that the auth suites refuse to load with `Jest's require(ESM) requires Node v24.9+`. So `pnpm test` and `pnpm test:e2e` want 24.9+ even though `engines.node` is `>=22.12`.
+
+That is not a hidden raise of the floor. `engines.node` describes running the application, and Node's own unflagged `require(esm)` genuinely works from 22.12 — which is why CI still runs `build` and the boot smoke test on the Node 22 cell (see [CI](#ci)) and only skips the Jest steps there.
 
 The e2e database must be migrated **and seeded**. Auth rate limits in `.env.test` are deliberately generous, because every suite signs in from the same address and production-shaped limits would throttle tests that have nothing to do with throttling; `test/auth-rate-limiting.e2e-spec.ts` builds its own app with tight limits and its own Redis database.
 
@@ -696,7 +791,17 @@ Alpine is safe here because Prisma 7 ships a WASM query compiler with no native 
 
 ## CI
 
-`.github/workflows/ci.yml` runs on push and pull request across a **Node 22 + 24** matrix with Postgres and Redis service containers: install (frozen lockfile) → generate → env drift check → lint → typecheck → unit tests → migrate → **seed** → e2e → build → boot smoke test → production image build (Node 22 cell only). Cheap gates run first. A failing matrix cell fails the workflow.
+`.github/workflows/ci.yml` runs on push and pull request across a **Node 22 + 24** matrix with Postgres and Redis service containers, cheapest gates first: install (frozen lockfile) → generate → env drift check → lint → typecheck → **unit tests** → migrate → **seed** → **e2e** → build → boot smoke test → production image build. A failing matrix cell fails the workflow.
+
+The cells are not identical, and the differences are deliberate:
+
+| Step | Where it runs | Why |
+| --- | --- | --- |
+| Unit + e2e tests | Node 24 only | Jest's ESM bridge needs Node 24.9+ ([Testing](#testing)). Skipped rather than failed on 22 |
+| Migrate + seed | **every** cell | `PlanResolutionService` reads `plans` during `onModuleInit`, so an unmigrated database fails the boot smoke test even on a cell that skips the suites. Both steps are idempotent |
+| Production image build | Node 24 only | Built once to avoid doubling build time, and on the cell that ran the full gate set — so the image is never built off a tree whose tests never ran. It is built and tagged as a gate, not pushed anywhere |
+
+Every cell still runs lint, typecheck, build, and the boot smoke test — which is what keeps the Node 22 floor an exercised claim rather than a documented one.
 
 The boot smoke test exists because path aliases are declared in `tsconfig.json` and mirrored in `.swcrc`; a drift between them passes lint, typecheck, and every test, and fails only when the built output actually runs.
 
@@ -716,10 +821,31 @@ The boot smoke test exists because path aliases are declared in `tsconfig.json` 
 
 ## Specs
 
-Planning artifacts live in `openspec/`. Each change's `design.md` records why decisions were made and what was rejected:
+This repo is spec-driven with [OpenSpec](https://github.com/Fission-AI/OpenSpec). Two directories, two purposes:
 
-- `openspec/changes/archive/…-add-platform-foundation/` — configuration, envelope, logging, persistence, Docker, CI.
-- `openspec/changes/add-auth-security/` — authentication, RBAC, 2FA, rate limiting, transport security. Worth reading before changing anything under `src/modules/auth/`: several settings there are non-obvious overrides of library defaults, and the reasoning (with the source verified against) is recorded rather than reconstructed.
+- **`openspec/specs/`** — the current capability specs (one per capability: `authentication`, `credits`, `usage-limits`, …). This is what the system is *supposed* to do today.
+- **`openspec/changes/`** — proposals in flight; completed ones move to `openspec/changes/archive/`. Each carries `proposal.md`, `design.md`, `tasks.md`, and delta specs.
+
+Everything shipped so far is archived under `openspec/changes/archive/`, and each change's `design.md` records why decisions were made and what was rejected:
+
+| Change | Covers |
+| --- | --- |
+| `…-add-platform-foundation` | configuration, envelope, validation, logging, persistence, Docker, CI |
+| `…-add-auth-security` | authentication, RBAC, 2FA, rate limiting, transport security |
+| `…-redis-throttling-usage-limits` | Nest throttling, daily/weekly usage counters |
+| `…-plans-and-subscriptions` | plan catalogue, entitlements, subscription lifecycle |
+| `…-credits-and-stripe` | wallet, ledger, `@CostsCredits`, Checkout top-up |
+| `…-admin-monitoring` | admin API, metrics, audit log, OpenAPI |
+| `…-async-cross-cutting-enterprise` | queues, mail, storage, feature flags, idempotency, organizations |
+| `…-nest-hosted-mcp` | MCP server, agent API keys |
+| `…-dx-docs-release-quality` | Make targets, hooks, commit quality, CI matrix |
+| `…-harden-auth-rbac-2fa` | atomic credential limiter, permission-cache versioning |
+| `…-harden-throttling-usage-limits` | per-policy counters, org usage dimension |
+| `…-harden-credits-billing` | settled-payment gating, compensation queue |
+
+The `add-auth-security` design is worth reading before changing anything under `src/modules/auth/`: several settings there are non-obvious overrides of library defaults, and the reasoning (with the source verified against) is recorded rather than reconstructed. The three `harden-*` changes are worth reading next — each one exists because a first-pass implementation had a gap that only shows up under concurrency or partial failure.
+
+Agent workflows are wired for both editors (`/opsx:*` in Claude Code, `/opsx-*` in Cursor); see [`AGENTS.md`](AGENTS.md). Do not skip specs for auth, billing, credits, or throttling changes.
 
 ## License
 
