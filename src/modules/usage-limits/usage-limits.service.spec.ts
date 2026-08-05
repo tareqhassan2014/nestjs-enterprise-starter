@@ -108,4 +108,82 @@ describe('UsageLimitsService', () => {
       status: HttpStatus.SERVICE_UNAVAILABLE,
     });
   });
+
+  it('prefers plan matrix ceilings over env defaults when PlanResolutionService is present', async () => {
+    const plans = {
+      resolve: jest.fn().mockResolvedValue({
+        usageLimits: { demo: { daily: 7, weekly: 20 } },
+      }),
+      usageCeiling: jest
+        .fn()
+        .mockImplementation(
+          (
+            _plan: unknown,
+            _feature: string,
+            period: 'day' | 'week',
+          ): number => (period === 'day' ? 7 : 20),
+        ),
+    };
+
+    const service = new UsageLimitsService(
+      {
+        mget: jest.fn().mockResolvedValue(['0']),
+      } as never,
+      {
+        default: { daily: 3, weekly: 10 },
+        features: { demo: { daily: 3, weekly: 10 } },
+      },
+      plans as never,
+    );
+
+    const snapshot = await service.check(subject, USAGE_FEATURES.DEMO, 'day');
+    expect(snapshot.limit).toBe(7);
+    expect(plans.resolve).toHaveBeenCalledWith('user-1');
+  });
+
+  it('falls back to env ceilings when the plan matrix has no row for the feature', async () => {
+    const plans = {
+      resolve: jest.fn().mockResolvedValue({ usageLimits: {} }),
+      usageCeiling: jest.fn().mockReturnValue(undefined),
+    };
+
+    const service = new UsageLimitsService(
+      {
+        mget: jest.fn().mockResolvedValue(['0']),
+      } as never,
+      {
+        default: { daily: 3, weekly: 10 },
+        features: { demo: { daily: 3, weekly: 10 } },
+      },
+      plans as never,
+    );
+
+    const snapshot = await service.check(subject, USAGE_FEATURES.DEMO, 'day');
+    expect(snapshot.limit).toBe(3);
+  });
+
+  it('keeps the usage: key prefix and fail-closed behaviour with plan resolution', async () => {
+    const plans = {
+      resolve: jest.fn().mockResolvedValue({ usageLimits: {} }),
+      usageCeiling: jest.fn().mockReturnValue(undefined),
+    };
+    const service = new UsageLimitsService(
+      {
+        mget: jest.fn().mockRejectedValue(new Error('down')),
+      } as never,
+      {
+        default: { daily: 3, weekly: 10 },
+        features: { demo: { daily: 3, weekly: 10 } },
+      },
+      plans as never,
+    );
+
+    expect(service.keysFor(subject, USAGE_FEATURES.DEMO, 'day')[0]).toMatch(
+      /^usage:day:/,
+    );
+
+    await expect(
+      service.check(subject, USAGE_FEATURES.DEMO, 'day'),
+    ).rejects.toMatchObject({ code: ErrorCode.SERVICE_UNAVAILABLE });
+  });
 });

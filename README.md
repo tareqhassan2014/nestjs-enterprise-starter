@@ -20,13 +20,14 @@ Fork it and build features on top — the parts every service needs are decided 
 | Authorization | Deny-by-default guards, roles and assignments in the database over a code-declared permission catalogue |
 | Abuse resistance | Per-address auth rate limits on Redis, plus self-healing per-account lockout |
 | Request throttling | Redis-backed Nest burst + per-minute limits; stricter on account Nest routes |
-| Usage limits | Daily/weekly Redis counters per user (and optional org) + feature |
+| Usage limits | Daily/weekly Redis counters per user (and optional org) + feature; ceilings from plan matrices |
+| Plans & subscriptions | Lite / Pro / Enterprise catalogue, monthly/yearly intervals, entitlement gate, seeded limit matrices |
 | Transport security | Helmet with an API-appropriate CSP, CORS allowlist, hardened session cookies |
 | Mail | Provider-agnostic port with a recording dev adapter and an SMTP adapter |
 | Local stack | Docker Compose: app + Postgres + Redis + Mailpit, with healthchecks |
 | CI | GitHub Actions: lint, typecheck, unit, integration, build, boot smoke test, image build |
 
-Not included by design: billing, plans, entitlements, credits, and admin APIs. Those are separate changes that build on this foundation.
+Not included by design: Stripe billing, credits / pay-as-you-go ledger, and admin monitoring APIs. Those are separate changes that build on this foundation.
 
 ## Requirements
 
@@ -41,7 +42,7 @@ cp .env.example .env
 pnpm install
 pnpm docker:up          # app + Postgres + Redis + Mailpit
 pnpm db:migrate:deploy  # apply migrations
-pnpm db:seed            # permission catalogue + baseline roles
+pnpm db:seed            # permission catalogue + baseline roles + plans
 ```
 
 Then:
@@ -166,7 +167,7 @@ Every application route lives under `/api/v1`. Health endpoints sit outside it s
 }
 ```
 
-Clients branch on `error.code`, not the HTTP status. Current codes: `VALIDATION_FAILED`, `BAD_REQUEST`, `UNAUTHORIZED`, `FORBIDDEN`, `NOT_FOUND`, `CONFLICT`, `RATE_LIMITED`, `SERVICE_UNAVAILABLE`, `INTERNAL_ERROR`, `EMAIL_NOT_VERIFIED`, `TWO_FACTOR_REQUIRED`, `ACCOUNT_LOCKED`. Codes are additive — never rename one.
+Clients branch on `error.code`, not the HTTP status. Current codes: `VALIDATION_FAILED`, `BAD_REQUEST`, `UNAUTHORIZED`, `FORBIDDEN`, `NOT_FOUND`, `CONFLICT`, `RATE_LIMITED`, `USAGE_LIMIT_EXCEEDED`, `SERVICE_UNAVAILABLE`, `INTERNAL_ERROR`, `EMAIL_NOT_VERIFIED`, `TWO_FACTOR_REQUIRED`, `ACCOUNT_LOCKED`, `ENTITLEMENT_DENIED`, `SUBSCRIPTION_INACTIVE`. Codes are additive — never rename one.
 
 The last three exist because each has a different remedy and a client must be able to tell them apart: verify your address, complete the second factor, or simply wait.
 
@@ -234,6 +235,7 @@ First-party endpoints, inside the envelope:
 | Purpose | Endpoint |
 | --- | --- |
 | Current principal, roles, permissions | `GET /api/v1/account/me` |
+| Current plan, entitlements, usage ceilings | `GET /api/v1/billing/plan` |
 | List own sessions | `GET /api/v1/account/sessions` |
 | Revoke one own session | `DELETE /api/v1/account/sessions/:id` |
 | Revoke all but current | `POST /api/v1/account/sessions/revoke-others` |
@@ -314,16 +316,34 @@ Effective permission sets are cached in Redis and invalidated by **advancing a v
 
 ```
 AuthGuard            → establishes the principal, or 401
-PermissionsGuard     → decides whether that principal may proceed, or 403
-[reserved]             plan entitlements
+PermissionsGuard     → decides whether that principal may proceed, or 403 FORBIDDEN
+EntitlementsGuard    → commercial plan gates (@RequireEntitlement / @RequirePlan), or 403 ENTITLEMENT_DENIED
 AppThrottlerGuard    → Nest burst / per-minute (Redis), or 429 RATE_LIMITED
 UsageLimitsGuard     → optional @UsageLimit, or 429 USAGE_LIMIT_EXCEEDED
 [reserved]             credit checks
 ```
 
-Order is the contract. Auth and Permissions register in `AuthorizationModule`; throttling and usage register in modules imported after it in `AppModule`. Later stages append **after** authorization and must consume the principal `AuthGuard` already resolved rather than re-resolving the session.
+Order is the contract. Auth and Permissions register in `AuthorizationModule`; plans, throttling, and usage register in modules imported after it in `AppModule` (in that order). Later stages append **after** authorization and must consume the principal `AuthGuard` already resolved rather than re-resolving the session.
 
-A `403` says only that you were refused. It never enumerates which permissions were required or missing — that would describe the policy to an attacker. The full reason is logged with the request id and the user id.
+A RBAC `403` (`FORBIDDEN`) says only that you were refused. It never enumerates which permissions were required or missing — that would describe the policy to an attacker. Plan denials use `ENTITLEMENT_DENIED` (or `SUBSCRIPTION_INACTIVE` when that classification applies) so clients can show upgrade / renew UI instead of a generic permission error. The full reason is logged with the request id and the user id.
+
+## Plans and subscriptions
+
+Commercial packaging is first-class: **Lite**, **Pro**, and optional **Enterprise**, with subscriptions on **monthly** or **yearly** intervals.
+
+| Piece | Where |
+| --- | --- |
+| Entitlement vocabulary | `src/modules/plans/entitlements.ts` (code-declared, typed into decorators) |
+| Seed matrices | `src/modules/plans/plan-seeds.ts` → `pnpm db:seed` |
+| Resolution | `PlanResolutionService` — entitled subscription, else Lite fallback |
+| Gate | `@RequireEntitlement(...)` / `@RequirePlan('pro')` after RBAC |
+| Current plan API | `GET /api/v1/billing/plan` (authenticated, enveloped) |
+
+**Lifecycle:** `active` and `past_due` are entitled; `canceled` remains entitled only while `currentPeriodEnd` is in the future. Users without an entitled subscription resolve as **Lite** so the starter is not soft-locked.
+
+**Usage ceilings** prefer the effective plan's `plan_usage_limits` row for a catalogue feature; otherwise they fall back to `USAGE_LIMIT_*` env defaults.
+
+Stripe Checkout, webhooks, and the credit ledger are **not** included — nullable Stripe id columns exist for a later billing change.
 
 ## Two-factor authentication
 
@@ -346,7 +366,7 @@ Three layers, because they solve different problems.
 
 **Nest burst + per-minute throttling on application routes** (`@nestjs/throttler` on the shared Redis client). Named windows (`burst`, `minute`) apply globally per tracker: authenticated callers key by `user:{id}`, anonymous by IP. First-party account / session / 2FA controllers under `/api/v1` use a stricter policy; `/health/*` skips throttling. This limiter does **not** wrap `/api/auth/*` — that surface stays on Better Auth’s rules. Exhaustion returns enveloped `429` with `RATE_LIMITED` and `Retry-After`. Redis failures fail closed as `503 SERVICE_UNAVAILABLE`.
 
-**Daily / weekly usage counters** for declared features (`UsageLimitsService`, optional `@UsageLimit`). Keys are per user (and optionally per org when multi-tenancy exists). Periods are UTC calendar day and ISO week. Exhaustion returns `429` with `USAGE_LIMIT_EXCEEDED` (distinct from burst throttling) plus `Retry-After` until the period resets. Prefer `consume()` after successful billable work when only successes should burn quota.
+**Daily / weekly usage counters** for declared features (`UsageLimitsService`, optional `@UsageLimit`). Keys are per user (and optionally per org when multi-tenancy exists). Periods are UTC calendar day and ISO week. Ceilings come from the caller's effective **plan matrix** when seeded, otherwise from `USAGE_LIMIT_*` env defaults. Exhaustion returns `429` with `USAGE_LIMIT_EXCEEDED` (distinct from burst throttling) plus `Retry-After` until the period resets. Prefer `consume()` after successful billable work when only successes should burn quota.
 
 **Per-account lockout**, because an address-keyed limiter does nothing about a thousand hosts each making four guesses at one password. After a threshold, retry delay grows exponentially to a cap, and the window **expires on its own** — no sticky lock, and no administrative unlock step. That is intentional: a permanent lock would hand an attacker the ability to deny a real user their own account.
 

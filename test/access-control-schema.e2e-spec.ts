@@ -167,8 +167,8 @@ describe('Access-control schema and seed (integration)', () => {
     });
   });
 
-  describe('no speculative billing models', () => {
-    it('declares no plan, subscription, entitlement, or credit-ledger table', async () => {
+  describe('no speculative credit or payment models', () => {
+    it('declares plan and subscription tables but no credit ledger', async () => {
       const rows = await prisma.$queryRaw<{ table_name: string }[]>`
         SELECT table_name FROM information_schema.tables
         WHERE table_schema = 'public'
@@ -176,13 +176,21 @@ describe('Access-control schema and seed (integration)', () => {
 
       const names = rows.map((row) => row.table_name);
 
-      for (const forbidden of [
+      for (const required of [
         'plans',
+        'plan_entitlements',
+        'plan_usage_limits',
         'subscriptions',
-        'entitlements',
+      ]) {
+        expect(names).toContain(required);
+      }
+
+      for (const forbidden of [
         'credits',
         'credit_ledger',
         'credit_ledgers',
+        'invoices',
+        'stripe_customers',
       ]) {
         expect(names).not.toContain(forbidden);
       }
@@ -195,6 +203,78 @@ describe('Access-control schema and seed (integration)', () => {
       `;
 
       expect(rows).toHaveLength(1);
+    });
+  });
+
+  describe('plan catalogue seed', () => {
+    it('seeds lite, pro, and enterprise with entitlement and usage matrices', async () => {
+      const planRows = await prisma.plan.findMany({
+        include: { entitlements: true, usageLimits: true },
+        orderBy: { rank: 'asc' },
+      });
+
+      expect(planRows.map((plan) => plan.slug)).toEqual([
+        'lite',
+        'pro',
+        'enterprise',
+      ]);
+
+      for (const plan of planRows) {
+        expect(plan.entitlements.map((row) => row.entitlementKey).sort()).toEqual(
+          ['feature.advanced', 'feature.priority_support'].sort(),
+        );
+        expect(plan.usageLimits.some((row) => row.feature === 'demo')).toBe(
+          true,
+        );
+      }
+
+      const lite = planRows.find((plan) => plan.slug === 'lite')!;
+      const pro = planRows.find((plan) => plan.slug === 'pro')!;
+      expect(
+        lite.entitlements.find((row) => row.entitlementKey === 'feature.advanced')
+          ?.enabled,
+      ).toBe(false);
+      expect(
+        pro.entitlements.find((row) => row.entitlementKey === 'feature.advanced')
+          ?.enabled,
+      ).toBe(true);
+    });
+
+    it('rejects a duplicate plan slug', async () => {
+      await expect(
+        prisma.plan.create({
+          data: {
+            slug: 'lite',
+            name: 'Dup',
+            rank: 99,
+          },
+        }),
+      ).rejects.toMatchObject({
+        name: 'PrismaClientKnownRequestError',
+        code: 'P2002',
+      });
+    });
+
+    it('rejects a duplicate plan entitlement pair', async () => {
+      const lite = await prisma.plan.findUniqueOrThrow({
+        where: { slug: 'lite' },
+      });
+      const existing = await prisma.planEntitlement.findFirstOrThrow({
+        where: { planId: lite.id },
+      });
+
+      await expect(
+        prisma.planEntitlement.create({
+          data: {
+            planId: existing.planId,
+            entitlementKey: existing.entitlementKey,
+            enabled: true,
+          },
+        }),
+      ).rejects.toMatchObject({
+        name: 'PrismaClientKnownRequestError',
+        code: 'P2002',
+      });
     });
   });
 });

@@ -6,7 +6,8 @@ import { UsageLimitsService } from './usage-limits.service';
 
 /**
  * Daily/weekly usage counters. `APP_GUARD` must be imported after
- * `ThrottlingModule` so the chain is Auth → Permissions → Throttle → Usage.
+ * `PlansModule` / `ThrottlingModule` so the chain is
+ * Auth → Permissions → Entitlements → Throttle → Usage.
  */
 @Global()
 @Module({

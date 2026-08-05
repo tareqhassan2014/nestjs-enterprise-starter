@@ -62,10 +62,11 @@ model User {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  accounts  Account[]
-  sessions  Session[]
-  twoFactor TwoFactor[]
-  roles     UserRole[]
+  accounts      Account[]
+  sessions      Session[]
+  twoFactor     TwoFactor[]
+  roles         UserRole[]
+  subscriptions Subscription[]
 
   @@map("users")
 }
@@ -224,4 +225,114 @@ model UserRole {
   @@index([userId])
   @@index([roleId])
   @@map("user_roles")
+}
+
+// ---------------------------------------------------------------------------
+// Plans & subscriptions — commercial packaging
+//
+// The *vocabulary* of entitlement keys lives in code
+// (`src/modules/plans/entitlements.ts`). Values and usage ceilings live here so
+// operators can tune matrices without a deploy of every fork; Stripe binds
+// later via nullable external ids, not by inventing parallel plan tables.
+// ---------------------------------------------------------------------------
+
+enum BillingInterval {
+  monthly
+  yearly
+}
+
+enum SubscriptionStatus {
+  active
+  past_due
+  canceled
+}
+
+/// Commercial tier. Slug is stable (`lite` / `pro` / `enterprise`); rank drives
+/// `@RequirePlan` minimum checks.
+model Plan {
+  id          String  @id @default(cuid())
+  slug        String  @unique
+  name        String
+  description String?
+  /// Ordering for minimum-plan gates. Lite < Pro < Enterprise.
+  rank        Int
+  isActive    Boolean @default(true)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  entitlements PlanEntitlement[]
+  usageLimits  PlanUsageLimit[]
+  subscriptions Subscription[]
+
+  @@map("plans")
+}
+
+/// Boolean feature flag per plan. Unique on (plan, key) makes seed idempotent.
+model PlanEntitlement {
+  id String @id @default(cuid())
+
+  planId         String
+  entitlementKey String
+  enabled        Boolean @default(false)
+
+  plan Plan @relation(fields: [planId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([planId, entitlementKey])
+  @@index([entitlementKey])
+  @@map("plan_entitlements")
+}
+
+/// Daily/weekly usage ceilings for a catalogue usage feature on a plan.
+model PlanUsageLimit {
+  id String @id @default(cuid())
+
+  planId      String
+  /// Matches `USAGE_FEATURES` catalogue strings (e.g. `demo`).
+  feature     String
+  dailyLimit  Int
+  weeklyLimit Int
+
+  plan Plan @relation(fields: [planId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([planId, feature])
+  @@index([feature])
+  @@map("plan_usage_limits")
+}
+
+/// User↔plan binding with billing interval and lifecycle status.
+model Subscription {
+  id String @id @default(cuid())
+
+  userId String
+  planId String
+
+  interval BillingInterval
+  status   SubscriptionStatus
+
+  currentPeriodStart DateTime?
+  currentPeriodEnd   DateTime?
+  canceledAt         DateTime?
+
+  /// Forward-compat for Stripe; unused until billing lands.
+  stripeCustomerId     String?
+  stripeSubscriptionId String?
+  stripePriceId        String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  plan Plan @relation(fields: [planId], references: [id], onDelete: Restrict)
+
+  @@index([userId])
+  @@index([planId])
+  @@index([status])
+  @@map("subscriptions")
 }

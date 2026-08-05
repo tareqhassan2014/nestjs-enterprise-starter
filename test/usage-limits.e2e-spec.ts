@@ -9,6 +9,9 @@ import { redisConfig } from '@config/redis.config';
 import { MailRecorder } from '@infrastructure/mail/mail-recorder';
 import { PrismaService } from '@infrastructure/prisma/prisma.service';
 import { REDIS_CLIENT } from '@infrastructure/redis/redis.constants';
+import { PLAN_SLUGS } from '@modules/plans/entitlements';
+import { PlanResolutionService } from '@modules/plans/plan-resolution.service';
+import type { EffectivePlan } from '@modules/plans/plan-resolution.service';
 import { UsageLimitsService } from '@modules/usage-limits/usage-limits.service';
 import { USAGE_FEATURES } from '@modules/usage-limits/usage-features';
 import { ErrorCode } from '@common/errors/error-code';
@@ -23,6 +26,34 @@ import { UsageFixtureModule } from './fixtures/usage-fixture.module';
 
 const DAILY = 3;
 const WEEKLY = 5;
+
+/** Stub plan resolution so this suite does not mutate shared seed matrices. */
+const tightPlan: EffectivePlan = {
+  planId: 'test-lite',
+  slug: PLAN_SLUGS.LITE,
+  name: 'Lite',
+  rank: 10,
+  fromSubscription: false,
+  subscriptionId: null,
+  status: null,
+  interval: null,
+  currentPeriodEnd: null,
+  entitlements: {},
+  usageLimits: {
+    demo: { daily: DAILY, weekly: WEEKLY },
+  },
+};
+
+const tightPlans: Pick<
+  PlanResolutionService,
+  'resolve' | 'usageCeiling' | 'reloadMatrices' | 'onModuleInit'
+> = {
+  onModuleInit: async () => undefined,
+  reloadMatrices: async () => undefined,
+  resolve: async () => tightPlan,
+  usageCeiling: (_plan, _feature, period) =>
+    period === 'day' ? DAILY : WEEKLY,
+};
 
 describe('Usage limits (integration)', () => {
   let app: NestExpressApplication;
@@ -49,6 +80,8 @@ describe('Usage limits (integration)', () => {
         builder
           .overrideProvider(usageLimitsConfig.KEY)
           .useValue(tightened)
+          .overrideProvider(PlanResolutionService)
+          .useValue(tightPlans)
           .overrideProvider(redisConfig.KEY)
           .useValue({ ...redisConfig(), url: `${redisConfig().url}/11` }),
       [UsageFixtureModule],

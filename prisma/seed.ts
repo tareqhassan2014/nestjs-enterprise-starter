@@ -7,19 +7,22 @@ import {
   PERMISSION_DESCRIPTIONS,
   PERMISSIONS,
 } from '../src/modules/authorization/permissions';
+import { ENTITLEMENT_LIST } from '../src/modules/plans/entitlements';
+import { PLAN_SEEDS } from '../src/modules/plans/plan-seeds';
+import { USAGE_FEATURES } from '../src/modules/usage-limits/usage-features';
 
 loadEnvFiles({ path: ['.env.local', '.env'], quiet: true });
 
-const SEED_VERSION = '2';
+const SEED_VERSION = '3';
+
+const USAGE_FEATURE_VALUES = Object.values(USAGE_FEATURES);
 
 /**
  * Seeds are idempotent — `upsert`, never `create` — so re-running against an
  * already-populated development database is safe and does nothing.
  *
- * For the access-control tables, idempotency rests on the composite unique
- * constraints in the schema rather than on bookkeeping here: `RolePermission`
- * and `UserRole` cannot hold a duplicate, so a concurrent or repeated run is
- * safe by construction.
+ * For access-control and plan-matrix tables, idempotency rests on composite
+ * unique constraints in the schema rather than on bookkeeping here.
  */
 async function seed(prisma: PrismaClient): Promise<void> {
   await prisma.appSetting.upsert({
@@ -29,6 +32,7 @@ async function seed(prisma: PrismaClient): Promise<void> {
   });
 
   await seedAccessControl(prisma);
+  await seedPlans(prisma);
 }
 
 /**
@@ -78,6 +82,88 @@ async function seedAccessControl(prisma: PrismaClient): Promise<void> {
   }
 }
 
+/**
+ * Upserts Lite / Pro / Enterprise with full entitlement and usage-limit
+ * matrices. Every code-declared entitlement and usage feature must appear on
+ * every seeded plan — gaps are programming errors, not silent omissions.
+ */
+async function seedPlans(prisma: PrismaClient): Promise<void> {
+  for (const definition of PLAN_SEEDS) {
+    for (const key of ENTITLEMENT_LIST) {
+      if (definition.entitlements[key] === undefined) {
+        throw new Error(
+          `Plan seed "${definition.slug}" is missing entitlement "${key}".`,
+        );
+      }
+    }
+
+    for (const feature of USAGE_FEATURE_VALUES) {
+      if (!definition.usageLimits[feature]) {
+        throw new Error(
+          `Plan seed "${definition.slug}" is missing usage limits for "${feature}".`,
+        );
+      }
+    }
+
+    const plan = await prisma.plan.upsert({
+      where: { slug: definition.slug },
+      update: {
+        name: definition.name,
+        description: definition.description,
+        rank: definition.rank,
+        isActive: definition.isActive,
+      },
+      create: {
+        slug: definition.slug,
+        name: definition.name,
+        description: definition.description,
+        rank: definition.rank,
+        isActive: definition.isActive,
+      },
+    });
+
+    for (const key of ENTITLEMENT_LIST) {
+      await prisma.planEntitlement.upsert({
+        where: {
+          planId_entitlementKey: {
+            planId: plan.id,
+            entitlementKey: key,
+          },
+        },
+        update: { enabled: definition.entitlements[key] },
+        create: {
+          planId: plan.id,
+          entitlementKey: key,
+          enabled: definition.entitlements[key],
+        },
+      });
+    }
+
+    for (const feature of USAGE_FEATURE_VALUES) {
+      const limits = definition.usageLimits[feature];
+
+      await prisma.planUsageLimit.upsert({
+        where: {
+          planId_feature: {
+            planId: plan.id,
+            feature,
+          },
+        },
+        update: {
+          dailyLimit: limits.dailyLimit,
+          weeklyLimit: limits.weeklyLimit,
+        },
+        create: {
+          planId: plan.id,
+          feature,
+          dailyLimit: limits.dailyLimit,
+          weeklyLimit: limits.weeklyLimit,
+        },
+      });
+    }
+  }
+}
+
 async function main(): Promise<void> {
   const connectionString = process.env.DATABASE_URL;
 
@@ -93,7 +179,8 @@ async function main(): Promise<void> {
     await seed(prisma);
     console.log(
       `Seeded (seed_version=${SEED_VERSION}, ${PERMISSIONS.length} permissions, ` +
-        `${Object.keys(BASELINE_ROLES).length} baseline roles).`,
+        `${Object.keys(BASELINE_ROLES).length} baseline roles, ` +
+        `${PLAN_SEEDS.length} plans, ${ENTITLEMENT_LIST.length} entitlements).`,
     );
   } finally {
     await prisma.$disconnect();

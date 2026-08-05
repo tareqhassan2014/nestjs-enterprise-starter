@@ -30,6 +30,7 @@ import { RedisModule } from '@infrastructure/redis/redis.module';
 import { AuthModule } from '@modules/auth/auth.module';
 import { BetterAuthMiddleware } from '@modules/auth/better-auth.middleware';
 import { AuthorizationModule } from '@modules/authorization/authorization.module';
+import { PlansModule } from '@modules/plans/plans.module';
 import { ThrottlingModule } from '@modules/throttling/throttling.module';
 import { UsageLimitsModule } from '@modules/usage-limits/usage-limits.module';
 
@@ -76,6 +77,7 @@ const AUTH_ROUTE_PATTERN = `${AUTH_BASE_PATH.replace(
     MailModule,
     AuthModule,
     AuthorizationModule,
+    PlansModule,
     ThrottlingModule,
     UsageLimitsModule,
     HealthModule,

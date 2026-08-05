@@ -54,12 +54,12 @@ The repository SHALL provide a seed entry point, invocable through the standard 
 
 Seeding MUST use upsert semantics rather than unconditional inserts, and MUST resolve path aliases identically to application code.
 
-Seeding now also establishes the access-control baseline: the permission catalogue declared in code, and the baseline roles with their permission mappings. Idempotency for these MUST rest on database uniqueness constraints rather than on seed-script bookkeeping, so a concurrent or repeated run cannot produce duplicate mappings.
+Seeding establishes the access-control baseline (permission catalogue and baseline roles with mappings) and the commercial baseline (plans, per-plan entitlements, and per-plan usage-limit matrices). Idempotency for these MUST rest on database uniqueness constraints rather than on seed-script bookkeeping, so a concurrent or repeated run cannot produce duplicate mappings or duplicate plan matrix rows.
 
 #### Scenario: Seed run on an empty database
 
 - **WHEN** the seed command runs against a freshly migrated database
-- **THEN** the baseline records, the permission catalogue, and the baseline roles are created and the command exits `0`
+- **THEN** the baseline records, the permission catalogue, the baseline roles, the plan catalogue, plan entitlements, and plan usage-limit matrices are created and the command exits `0`
 
 #### Scenario: Seed run twice
 
@@ -70,6 +70,11 @@ Seeding now also establishes the access-control baseline: the permission catalog
 
 - **WHEN** the seed completes
 - **THEN** the persisted permission catalogue contains exactly the permission identifiers declared in code
+
+#### Scenario: Plan matrices match code catalogues
+
+- **WHEN** the seed completes
+- **THEN** every seeded plan has entitlement rows for every declared entitlement identifier and usage-limit rows for every declared usage feature
 
 #### Scenario: Seed run after a permission is added in code
 
@@ -83,21 +88,28 @@ Seeding now also establishes the access-control baseline: the permission catalog
 
 ### Requirement: Baseline schema
 
-The schema SHALL contain only what the platform foundation and the authentication and authorization capabilities require, with no model anticipating billing, plans, or credits.
+The schema SHALL contain the models required by the platform foundation, authentication, authorization, plans, and subscriptions. It MUST NOT introduce credit-ledger or Stripe-invoice models in this change.
 
-Identity and access-control models are now in scope: the authentication library's user, session, account, verification, and two-factor models, plus the role, permission, role-to-permission mapping, and user-to-role assignment tables. Their **model names** MUST match what the authentication library queries, while their table names MUST follow the repository's existing snake_case convention through explicit mapping.
+Identity and access-control models remain in scope: the authentication library's user, session, account, verification, and two-factor models, plus the role, permission, role-to-permission mapping, and user-to-role assignment tables. Their **model names** MUST match what the authentication library queries, while their table names MUST follow the repository's existing snake_case convention through explicit mapping.
 
-The schema MUST retain at least one model unrelated to identity, so the seed hook and persistence tests exercise a real write-and-read round trip independently of authentication.
+Plan and subscription models are now in scope: plan catalogue, per-plan entitlements, per-plan usage-limit matrices, and user subscriptions (including billing interval and lifecycle status). Credit-ledger and payment-object models remain forbidden until a dedicated billing/credits change.
+
+The schema MUST retain at least one model unrelated to identity and billing, so the seed hook and persistence tests exercise a real write-and-read round trip independently of authentication.
 
 #### Scenario: Persistence round trip
 
 - **WHEN** an integration test writes a baseline record and reads it back
 - **THEN** the value read equals the value written
 
-#### Scenario: No speculative domain models
+#### Scenario: No speculative credit or payment models
 
 - **WHEN** the schema is inspected
-- **THEN** it contains no plan, subscription, entitlement, or credit-ledger model
+- **THEN** it contains no credit-ledger, wallet, invoice, or Stripe customer/payment-intent model as a required domain table
+
+#### Scenario: Plan and subscription models present
+
+- **WHEN** the schema is inspected
+- **THEN** it declares plan, plan-entitlement, plan-usage-limit, and subscription models with uniqueness constraints on plan slug, plan-entitlement pairs, and plan-feature usage-limit pairs
 
 #### Scenario: Identity models present
 

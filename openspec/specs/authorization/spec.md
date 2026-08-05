@@ -88,11 +88,11 @@ The persisted permission catalogue SHALL be seeded from that declaration. A perm
 
 ### Requirement: Authenticate then authorize, in a fixed and extensible order
 
-Access control SHALL run as an ordered chain: authentication resolves the principal, then authorization evaluates the route's declared requirements.
+Access control SHALL run as an ordered chain: authentication resolves the principal, then authorization evaluates the route's declared requirements, then plan entitlements evaluate commercial gates when annotated.
 
-Authorization MUST NOT re-resolve the session; it consumes the principal established by authentication. The chain's ordering SHALL be: authentication, authorization, plan entitlements (when present), request throttling, usage limits, then credit checks — extending in that order rather than introducing a parallel mechanism.
+Authorization MUST NOT re-resolve the session; it consumes the principal established by authentication. The chain's ordering SHALL be: authentication, authorization, plan entitlements, request throttling, usage limits, then credit checks — extending in that order rather than introducing a parallel mechanism.
 
-Request throttling and usage-limit stages MUST consume the already-resolved principal when keying per-user counters, and MUST NOT perform their own session lookup.
+Plan entitlement, request throttling, and usage-limit stages MUST consume the already-resolved principal, and MUST NOT perform their own session lookup.
 
 #### Scenario: Unauthenticated request to a permission-gated route
 
@@ -114,15 +114,20 @@ Request throttling and usage-limit stages MUST consume the already-resolved prin
 - **WHEN** a request passes through the full chain
 - **THEN** the session is resolved a single time and later stages read the already-resolved principal
 
-#### Scenario: Throttling runs after authorization
+#### Scenario: Entitlements run after authorization
 
-- **WHEN** an authenticated but unpermitted user calls a permission-gated route that would also be over a throttle ceiling
-- **THEN** the response is `403` and throttle counters for that request are not required to increment as a successful admission
+- **WHEN** the guard registration order is inspected
+- **THEN** plan entitlements are registered after authorization and before request throttling
+
+#### Scenario: Throttling runs after entitlements
+
+- **WHEN** an authenticated and RBAC-permitted user lacks a required entitlement on a route that would also be over a throttle ceiling
+- **THEN** the response is `403` with a plan entitlement error code and throttle counters for that request are not required to increment as a successful admission
 
 #### Scenario: Usage limits run after throttling
 
 - **WHEN** the guard registration order is inspected
-- **THEN** request throttling is registered after authorization and before usage-limit enforcement, and both appear before any credit check
+- **THEN** request throttling is registered after plan entitlements and before usage-limit enforcement, and both appear before any credit check
 
 ### Requirement: Route requirements are declared by annotation
 

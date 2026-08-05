@@ -1,4 +1,4 @@
-import { HttpStatus, Inject, Injectable, Logger } from '@nestjs/common';
+import { HttpStatus, Inject, Injectable, Logger, Optional } from '@nestjs/common';
 import type { ConfigType } from '@nestjs/config';
 import type { Redis } from 'ioredis';
 
@@ -6,6 +6,7 @@ import { ApiException } from '@common/errors/api-exception';
 import { ErrorCode } from '@common/errors/error-code';
 import { usageLimitsConfig } from '@config/usage-limits.config';
 import { REDIS_CLIENT } from '@infrastructure/redis/redis.constants';
+import { PlanResolutionService } from '@modules/plans/plan-resolution.service';
 
 import { assertUsageFeature, type UsageFeature } from './usage-features';
 
@@ -31,6 +32,9 @@ export interface UsageSnapshot {
  * Keys:
  *   usage:{day|week}:{feature}:u:{userId}
  *   usage:{day|week}:{feature}:o:{orgId}   (optional; both enforced when set)
+ *
+ * Ceilings prefer the caller's effective plan matrix when present, otherwise
+ * validated env/config defaults.
  */
 @Injectable()
 export class UsageLimitsService {
@@ -40,6 +44,7 @@ export class UsageLimitsService {
     @Inject(REDIS_CLIENT) private readonly redis: Redis,
     @Inject(usageLimitsConfig.KEY)
     private readonly config: ConfigType<typeof usageLimitsConfig>,
+    @Optional() private readonly plans?: PlanResolutionService,
   ) {}
 
   async check(
@@ -48,7 +53,7 @@ export class UsageLimitsService {
     period: UsagePeriod,
   ): Promise<UsageSnapshot> {
     assertUsageFeature(feature);
-    const limit = this.ceiling(feature, period);
+    const limit = await this.ceilingFor(subject, feature, period);
     const keys = this.keysFor(subject, feature, period);
 
     try {
@@ -94,6 +99,7 @@ export class UsageLimitsService {
       for (const period of periods) {
         const ttl = this.secondsUntilPeriodEnd(period);
         const keys = this.keysFor(subject, feature, period);
+        const limit = await this.ceilingFor(subject, feature, period);
 
         for (const key of keys) {
           const next = await this.redis.incr(key);
@@ -101,7 +107,6 @@ export class UsageLimitsService {
             await this.redis.expire(key, ttl);
           }
 
-          const limit = this.ceiling(feature, period);
           if (next > limit) {
             // Race: another request won the last slot. Roll back and reject.
             await this.redis.decr(key);
@@ -125,10 +130,30 @@ export class UsageLimitsService {
     }
   }
 
+  /**
+   * Config-only ceiling (no plan lookup). Kept for unit tests and callers that
+   * already know they want env defaults.
+   */
   ceiling(feature: UsageFeature, period: UsagePeriod): number {
     const override = this.config.features[feature];
     const source = override ?? this.config.default;
     return period === 'day' ? source.daily : source.weekly;
+  }
+
+  async ceilingFor(
+    subject: UsageSubject,
+    feature: UsageFeature,
+    period: UsagePeriod,
+  ): Promise<number> {
+    if (this.plans) {
+      const effective = await this.plans.resolve(subject.userId);
+      const fromPlan = this.plans.usageCeiling(effective, feature, period);
+      if (fromPlan !== undefined) {
+        return fromPlan;
+      }
+    }
+
+    return this.ceiling(feature, period);
   }
 
   keysFor(

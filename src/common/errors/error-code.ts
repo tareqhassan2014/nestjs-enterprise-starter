@@ -36,6 +36,17 @@ export const ErrorCode = {
 
   /** Too many failures against this account. Wait — the window expires by itself. */
   ACCOUNT_LOCKED: 'ACCOUNT_LOCKED',
+
+  /**
+   * Commercial plan outcomes — distinct from RBAC `FORBIDDEN` so clients can
+   * show upgrade / renew UI rather than a generic permission error.
+   */
+
+  /** Effective plan lacks a required entitlement or minimum rank. */
+  ENTITLEMENT_DENIED: 'ENTITLEMENT_DENIED',
+
+  /** An entitled subscription is required and none is in force. */
+  SUBSCRIPTION_INACTIVE: 'SUBSCRIPTION_INACTIVE',
 } as const;
 
 export type ErrorCode = (typeof ErrorCode)[keyof typeof ErrorCode];

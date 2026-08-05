@@ -36,9 +36,10 @@ const ACCESS_REQUEST_KEY = 'authzAccess';
  * again, and resolves the effective access set at most once per request even when
  * several requirements are evaluated.
  *
- * Later capabilities extend the chain after this one — plan entitlements, then
- * throttling and usage limits, then credit checks — in that order, and likewise
- * read the already-resolved principal instead of re-deriving it.
+ * Later capabilities extend the chain after this one — plan entitlements (filled
+ * by `EntitlementsGuard`), then throttling and usage limits, then credit checks —
+ * in that order, and likewise read the already-resolved principal instead of
+ * re-deriving it.
  */
 @Injectable()
 export class PermissionsGuard implements CanActivate {
