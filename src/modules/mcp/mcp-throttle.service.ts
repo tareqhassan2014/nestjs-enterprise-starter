@@ -6,6 +6,16 @@ import { mcpConfig } from '@config/mcp.config';
 import { REDIS_CLIENT } from '@infrastructure/redis/redis.constants';
 
 /**
+ * Why a tool invocation was refused at the throttle stage.
+ *
+ * Two members, not one, and the distinction is the point: `request-throttling`
+ * requires a storage failure be distinguishable from a genuine exceedance, and
+ * collapsing them tells an agent to wait out a window that will never elapse
+ * while hiding an outage behind a routine, self-clearing condition.
+ */
+export type McpThrottleDenial = 'RATE_LIMITED' | 'STORE_UNAVAILABLE';
+
+/**
  * Redis burst + per-minute counters for MCP tool invocations (fail closed).
  */
 @Injectable()
@@ -19,9 +29,9 @@ export class McpThrottleService {
   ) {}
 
   /**
-   * @returns null when admitted; otherwise a RATE_LIMITED denial reason.
+   * @returns null when admitted; otherwise why the invocation was refused.
    */
-  async consume(userId: string): Promise<'RATE_LIMITED' | null> {
+  async consume(userId: string): Promise<McpThrottleDenial | null> {
     try {
       const burstOk = await this.hit(
         `mcp:throttle:burst:u:${userId}`,
@@ -46,8 +56,15 @@ export class McpThrottleService {
       this.logger.error(
         `MCP throttle store unavailable: ${error instanceof Error ? error.message : String(error)}`,
       );
-      // Fail closed — same posture as Nest throttling.
-      return 'RATE_LIMITED';
+
+      /**
+       * Fail closed — same posture as Nest throttling — but reported as its own
+       * reason rather than as `RATE_LIMITED`. The refusal is identical; what
+       * changes is that the caller is told this is temporary and unrelated to
+       * their own request rate, and that the invocation log records an outage
+       * rather than apparent abuse.
+       */
+      return 'STORE_UNAVAILABLE';
     }
   }
 

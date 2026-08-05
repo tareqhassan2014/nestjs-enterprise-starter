@@ -10,7 +10,10 @@ import { MetricsService } from '@modules/metrics/metrics.service';
 import type { Entitlement, PlanSlug } from '@modules/plans/entitlements';
 import { PlanResolutionService } from '@modules/plans/plan-resolution.service';
 import type { UsageFeature } from '@modules/usage-limits/usage-features';
-import { UsageLimitsService } from '@modules/usage-limits/usage-limits.service';
+import {
+  usageSubject,
+  UsageLimitsService,
+} from '@modules/usage-limits/usage-limits.service';
 
 import { McpInvocationLogService } from './mcp-invocation-log.service';
 import { McpThrottleService } from './mcp-throttle.service';
@@ -51,7 +54,32 @@ export class AgentPipeline {
       }
 
       const limited = await this.throttle.consume(principal.user.id);
-      if (limited) {
+
+      /**
+       * Any non-null reason denies; only the *status* depends on which one.
+       *
+       * Structured this way — outer `!== null`, inner discrimination — so a reason
+       * added to `McpThrottleDenial` later still refuses the invocation. Matching
+       * each known member instead would let a new one fall through and be
+       * admitted, which is the wrong direction to fail on an admission stage.
+       */
+      if (limited !== null) {
+        if (limited === 'STORE_UNAVAILABLE') {
+          /**
+           * Refused either way, but a different answer to "should I retry?". A
+           * `RATE_LIMITED` here would tell the agent to wait out a window that
+           * does not exist, and would log apparent abuse for what is an outage.
+           * `SERVICE_UNAVAILABLE` also falls outside the `denied` classification
+           * below, so `finish` records it as `error` — which is what makes the two
+           * separable in the invocation trail with no extra bookkeeping.
+           */
+          throw new ApiException(
+            HttpStatus.SERVICE_UNAVAILABLE,
+            ErrorCode.SERVICE_UNAVAILABLE,
+            'MCP rate limiting is temporarily unavailable. Try again shortly.',
+          );
+        }
+
         throw new ApiException(
           HttpStatus.TOO_MANY_REQUESTS,
           ErrorCode.RATE_LIMITED,
@@ -60,8 +88,16 @@ export class AgentPipeline {
       }
 
       if (tool.usageFeature) {
+        /**
+         * Member-only, because MCP has no organization binding to resolve. The
+         * `X-Organization-Id` binding is an HTTP concern established by
+         * `OrganizationContextGuard`; a tool invocation authenticates with an API
+         * key and carries no org context, which is also why credit spend below is
+         * user-primary. Resolving a billing subject here would invent org scoping
+         * for MCP that the credit stage does not have — a different change.
+         */
         await this.usage.consume(
-          { userId: principal.user.id },
+          usageSubject(principal.user.id),
           tool.usageFeature,
         );
       }

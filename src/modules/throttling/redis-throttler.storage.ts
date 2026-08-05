@@ -12,7 +12,18 @@ interface ThrottlerStorageRecord {
 /**
  * Redis-backed throttle counters on the shared client.
  *
- * Keys: `throttle:{name}:{tracker}` and `throttle:{name}:block:{tracker}`.
+ * Keys: `throttle:{name}:{key}` and `throttle:{name}:block:{key}`, where `key`
+ * comes from `AppThrottlerGuard.generateKey` and carries a policy segment —
+ * `throttle:burst:strict:user:123`, say.
+ *
+ * **Both keys derive from that one argument, which is load-bearing.** The
+ * `blockPttl > 0` short-circuit below returns `isBlocked` regardless of which
+ * ceiling is asking, so if the incoming key did not distinguish policy, a block
+ * written when a caller exceeded the strict account ceiling would deny every
+ * other Nest route too. Scoping happens in `generateKey`; this class inherits it
+ * for free. Anything that builds a key here from something other than `key`
+ * would need to reapply that scoping itself.
+ *
  * Failures propagate so the guard can fail closed rather than admit unmetered
  * traffic — the opposite of session-cache behaviour on the same client.
  */

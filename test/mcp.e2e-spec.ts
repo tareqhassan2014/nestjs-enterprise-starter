@@ -284,6 +284,58 @@ describe('Nest-hosted MCP (integration)', () => {
     }
   });
 
+  /**
+   * A throttle-storage outage must not present as a rate limit.
+   *
+   * `request-throttling` requires the two be distinguishable, and the Nest path
+   * honours it (`503` against `429`) — but `McpThrottleService` used to return the
+   * same `'RATE_LIMITED'` string from its catch block as from a genuine
+   * exceedance. An agent told to back off then waits out a window that does not
+   * exist, and the invocation log records apparent abuse for what is an outage.
+   *
+   * Paired with "rate-limits when MCP burst ceiling is forced low" below: that case
+   * asserts a real exceedance still says `RATE_LIMITED`, this one asserts an outage
+   * says something else. Neither alone shows they are distinguishable.
+   */
+  it('reports a throttle-storage outage as a service condition, not a rate limit', async () => {
+    /**
+     * Scoped to the MCP throttle keys, delegating everything else to the live
+     * client. A blanket `incr` failure would also break the Nest throttler and the
+     * permission-cache version bump, so the invocation would be refused before it
+     * ever reached the MCP throttle stage — and the test would pass for the wrong
+     * reason.
+     */
+    const passThrough = redis.incr.bind(redis);
+    const spy = jest
+      .spyOn(redis, 'incr')
+      .mockImplementation((key: string) =>
+        key.startsWith('mcp:throttle:')
+          ? Promise.reject(new Error('redis unreachable'))
+          : passThrough(key),
+      );
+
+    const { client, transport } = await connectMcpClient(baseUrl, apiKeySecret);
+    try {
+      const result = await client.callTool({
+        name: 'credits.get_balance',
+        arguments: {},
+      });
+
+      expect(result.isError).toBe(true);
+      const text = String(
+        (result.content as { type: string; text?: string }[])[0]?.text ?? '',
+      );
+
+      // Still refused — fail-closed is unchanged. What changes is the reason.
+      expect(text).toMatch(/SERVICE_UNAVAILABLE/);
+      expect(text).not.toMatch(/RATE_LIMITED/);
+    } finally {
+      spy.mockRestore();
+      await transport.close();
+      await client.close();
+    }
+  });
+
   it('rate-limits when MCP burst ceiling is forced low', async () => {
     // Override is already baked into the app; drive throttle by rewriting Redis
     // counters via a temporary low-ceiling override through redis keys.

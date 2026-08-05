@@ -155,6 +155,79 @@ describe('Request throttling (integration)', () => {
     await prisma.user.delete({ where: { id: user.userId } });
   });
 
+  /**
+   * The strict and default policies must not share a counter.
+   *
+   * These cases need one tracker crossing both policies, which is why they sign in
+   * rather than using the fixture route: `/api/v1/fixture/object` is `@Public()`,
+   * so `AuthGuard` never publishes a principal and the tracker is `ip:…`, while
+   * `/api/v1/account/me` tracks `user:…`. Different keys either way — so the
+   * original bug was invisible to every existing case here.
+   *
+   * `GET /api/v1/billing/plan` is authenticated with the default policy;
+   * `GET /api/v1/account/me` is authenticated and `@StrictThrottle()`. Same
+   * tracker, different ceilings.
+   */
+  describe('policy counters are independent', () => {
+    const asUser = (path: string, cookie: string) =>
+      request(server()).get(path).set('Cookie', cookie);
+
+    it('does not let default-policy traffic consume the strict allowance', async () => {
+      const user = await createVerifiedUser(
+        { app, prisma, mail },
+        'throttle-policy-bleed',
+      );
+
+      try {
+        // Enough default-policy calls to exceed the strict ceiling while staying
+        // under the default one.
+        expect(STRICT_BURST_MAX).toBeLessThan(BURST_MAX);
+        for (let index = 0; index < BURST_MAX; index += 1) {
+          const response = await asUser('/api/v1/billing/plan', user.cookie);
+          expect(response.status).toBe(200);
+        }
+
+        /**
+         * First strict-policy request for this caller. Under the shared counter it
+         * arrived already over the strict ceiling — `429` before the caller had
+         * made a single account-route call.
+         */
+        const strict = await asUser('/api/v1/account/me', user.cookie);
+        expect(strict.status).toBe(200);
+      } finally {
+        await prisma.user.delete({ where: { id: user.userId } });
+      }
+    });
+
+    it('does not let a strict block deny default-policy routes', async () => {
+      const user = await createVerifiedUser(
+        { app, prisma, mail },
+        'throttle-policy-block',
+      );
+
+      try {
+        // Exhaust the strict ceiling, which writes a block key.
+        const strictStatuses: number[] = [];
+        for (let index = 0; index < STRICT_BURST_MAX + 2; index += 1) {
+          strictStatuses.push(
+            (await asUser('/api/v1/account/me', user.cookie)).status,
+          );
+        }
+        expect(strictStatuses).toContain(429);
+
+        /**
+         * The block key used to be policy-agnostic, so exceeding the account
+         * ceiling denied every Nest route — a tighter limit on a sensitive surface
+         * became a lever for locking the caller out of the whole API.
+         */
+        const defaultRoute = await asUser('/api/v1/billing/plan', user.cookie);
+        expect(defaultRoute.status).toBe(200);
+      } finally {
+        await prisma.user.delete({ where: { id: user.userId } });
+      }
+    });
+  });
+
   it('returns 503 SERVICE_UNAVAILABLE when Redis cannot serve throttle counters', async () => {
     await redis.quit().catch(() => undefined);
     redis.disconnect();

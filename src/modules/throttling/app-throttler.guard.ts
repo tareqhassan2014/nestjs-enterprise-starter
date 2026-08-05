@@ -29,8 +29,21 @@ import { STRICT_THROTTLE_KEY } from './throttle.decorators';
  * Nest admission control after auth/RBAC.
  *
  * Tracker: authenticated `user:{id}`, else `ip:{address}` (Express `req.ip`,
- * which already honours `TRUST_PROXY`). Keys are global per tracker — not
- * per-route — so exhausting burst on one Nest path protects the rest.
+ * which already honours `TRUST_PROXY`).
+ *
+ * Keys are per **policy** per tracker — not per route. Exhausting the default
+ * burst on one Nest path still protects the other default paths, which is the
+ * property worth having; what the policy segment adds is that a `@StrictThrottle()`
+ * route no longer shares a counter with routes held to a different ceiling.
+ *
+ * That sharing was not a small discrepancy. `handleRequest` substitutes the
+ * strict ceiling while the key stayed identical, so with the shipped defaults
+ * (`burst` 20/10s against `strict.burst` 10/5s) fifteen ordinary requests left a
+ * caller already over the strict ceiling before their first account call. And
+ * because `RedisThrottlerStorage` derives its *block* key from this same key, a
+ * strict violation used to write a block that denied every Nest route — turning a
+ * tighter limit on a sensitive surface into a lever for locking the caller out of
+ * the whole API.
  *
  * Redis errors fail closed as `503 SERVICE_UNAVAILABLE`. Limit hits become
  * enveloped `429 RATE_LIMITED` with `Retry-After`.
@@ -60,26 +73,49 @@ export class AppThrottlerGuard extends ThrottlerGuard {
   }
 
   /**
-   * One counter per tracker + named window, shared across Nest routes.
-   * The default library key includes class/handler and would fragment limits.
+   * One counter per policy + tracker + named window, shared across the routes
+   * governed by that policy.
+   *
+   * Not the library default, which includes class and handler and would let a
+   * caller spend a full allowance on each of many routes. Not the bare tracker
+   * either — that shares one count between policies holding it to different
+   * ceilings. The policy segment is the smallest thing that separates the two
+   * without fragmenting per route.
+   *
+   * `RedisThrottlerStorage` interpolates this key into both its hits key and its
+   * block key, so scoping here scopes both: a block written under one policy
+   * cannot deny routes governed by another.
    */
   protected override generateKey(
-    _context: ExecutionContext,
+    context: ExecutionContext,
     tracker: string,
   ): string {
-    return tracker;
+    return `${this.policyFor(context)}:${tracker}`;
+  }
+
+  /**
+   * Which ceiling set governs this route.
+   *
+   * Read from the same reflection `handleRequest` uses, through one method, so the
+   * key and the ceiling cannot disagree about which policy applies — a
+   * disagreement there is exactly the bug this change fixes, and having two
+   * readers of the same metadata is how it would come back.
+   */
+  private policyFor(context: ExecutionContext): 'strict' | 'default' {
+    const isStrict = this.reflector.getAllAndOverride<boolean>(
+      STRICT_THROTTLE_KEY,
+      [context.getHandler(), context.getClass()],
+    );
+
+    return isStrict ? 'strict' : 'default';
   }
 
   protected override async handleRequest(
     requestProps: Parameters<ThrottlerGuard['handleRequest']>[0],
   ): Promise<boolean> {
     const { context, throttler } = requestProps;
-    const isStrict = this.reflector.getAllAndOverride<boolean>(
-      STRICT_THROTTLE_KEY,
-      [context.getHandler(), context.getClass()],
-    );
 
-    if (isStrict) {
+    if (this.policyFor(context) === 'strict') {
       const named = throttler.name === 'minute' ? 'minute' : 'burst';
       const policy = this.throttle.strict[named];
       requestProps.limit = policy.max;

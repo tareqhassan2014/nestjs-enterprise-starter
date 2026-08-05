@@ -1,10 +1,4 @@
-# Usage Limits
-
-## Purpose
-
-Daily and weekly Redis usage counters keyed by subject and feature, with fail-closed storage behaviour and envelope responses distinct from burst/per-minute throttling.
-
-## Requirements
+## MODIFIED Requirements
 
 ### Requirement: Daily and weekly usage counters
 
@@ -116,43 +110,6 @@ Ceiling resolution SHALL sit inside the fail-closed boundary. A failure to resol
 - **WHEN** the persisted subscriptions cannot be read while resolving a ceiling
 - **THEN** the consume is rejected with the same temporary-service status as a counter-store failure, and not as an internal error
 
-### Requirement: Usage limit exceeded response
-
-Exhausting a daily or weekly usage ceiling SHALL produce HTTP `429` with error code `USAGE_LIMIT_EXCEEDED` on enveloped routes, distinct from burst/per-minute `RATE_LIMITED`.
-
-The response MUST include `Retry-After` indicating whole seconds until the exhausted period resets, and MUST include structured details naming at least the feature and the period that was exceeded.
-
-#### Scenario: Daily quota exhausted on an enveloped route
-
-- **WHEN** a Nest route or service rejects a request because the daily usage ceiling for a feature is exhausted
-- **THEN** the response is `429` with `error.code` `USAGE_LIMIT_EXCEEDED`
-- **AND** `Retry-After` reflects time until the next UTC day boundary
-- **AND** `error.details` identifies the feature and the `day` period
-
-#### Scenario: Distinct from throttle rate limit
-
-- **WHEN** a client compares a Nest throttle rejection to a usage-ceiling rejection
-- **THEN** the former uses `RATE_LIMITED` and the latter uses `USAGE_LIMIT_EXCEEDED`
-
-### Requirement: Usage storage failure fails closed
-
-When Redis is unavailable for a usage check or increment, the consume MUST fail rather than admitting unmetered usage. The failure MUST NOT be reported as `USAGE_LIMIT_EXCEEDED`.
-
-#### Scenario: Redis down during consume
-
-- **WHEN** Redis cannot serve a usage counter operation
-- **THEN** the consume fails with `503` / `SERVICE_UNAVAILABLE` (or an equivalent non-quota error)
-- **AND** the error code is not `USAGE_LIMIT_EXCEEDED`
-
-### Requirement: Counters self-expire with the period
-
-Usage keys MUST carry a TTL that ends the period so unused keys do not accumulate indefinitely and so a period rollover does not require a sweeper job.
-
-#### Scenario: Key absent after period ends
-
-- **WHEN** a daily usage key's period has ended and its TTL has elapsed
-- **THEN** a subsequent consume starts a new counter at zero for the new period
-
 ### Requirement: Guard-chain and programmatic consume
 
 Usage enforcement SHALL be available both as an optional route annotation for simple metered endpoints and as a programmatic service API for feature modules that must meter only successful billable work.
@@ -180,35 +137,3 @@ A guard SHALL resolve the organization dimension the same way the credit gate re
 
 - **WHEN** a request binds an organization the caller belongs to and calls a usage-annotated route
 - **THEN** the organization-scoped counter for that feature is enforced alongside the user-scoped one
-
-### Requirement: Usage-metered MCP tools share feature counters
-
-When an MCP tool is declared against a catalogue usage feature, a successful admission through the usage stage MUST consume the same Redis daily/weekly counters (feature + subject key scheme) as the equivalent HTTP usage-gated path.
-
-Exceeding a ceiling MUST deny the tool before credit spend and before the adapter runs. Tools without a usage declaration MUST NOT increment usage counters.
-
-#### Scenario: MCP consume increments shared counter
-
-- **WHEN** an authenticated principal successfully invokes a usage-metered MCP tool for a catalogue feature
-- **THEN** that feature’s user-scoped daily and weekly counters increment as they would for a successful HTTP consume of the same feature
-
-#### Scenario: Ceiling reached denies MCP tool
-
-- **WHEN** the principal’s daily or weekly counter for the feature is already at the ceiling
-- **THEN** the MCP tool invocation is denied and the adapter does not run
-
-### Requirement: Async usage rollups via job queues
-
-The system SHALL be able to enqueue usage rollup or snapshot jobs on the `usage.rollups` queue for reporting or admin aggregation. Rollup jobs MUST NOT change the synchronous consume/reject behaviour of usage guards, and MUST NOT be required for period expiry (counters remain TTL self-expiring).
-
-When an organization id is present on the usage subject, rollups MAY include organization-scoped counters using the existing key scheme.
-
-#### Scenario: Rollup job enqueued without affecting live consume
-
-- **WHEN** a rollup job runs successfully or fails
-- **THEN** a concurrent live consume still reads and increments Redis counters under the same fail-closed rules as before
-
-#### Scenario: Org counters eligible for rollup
-
-- **WHEN** organization-scoped usage counters exist for a feature and period
-- **THEN** a rollup job can read those keys without requiring a redesign of the subject key scheme
