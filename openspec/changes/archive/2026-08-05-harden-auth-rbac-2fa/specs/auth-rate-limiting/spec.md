@@ -1,12 +1,4 @@
-# Authentication Rate Limiting
-
-## Purpose
-
-Brute-force resistance on the credential surface: tighter per-path limits, per-account lockout, and counters held in shared storage so limits hold across instances rather than per process.
-
-Two failure modes are avoided deliberately. A lockout an attacker can pin indefinitely is a denial-of-service tool pointed at the legitimate user, so windows expire on their own with no administrative unlock. And a limiter that behaves differently for registered and unregistered identifiers is an account-existence oracle, so it must not behave differently at all.
-
-## Requirements
+## MODIFIED Requirements
 
 ### Requirement: Credential endpoints are rate limited more tightly than the rest of the auth surface
 
@@ -101,64 +93,6 @@ Growth MUST be demonstrated through the HTTP surface. A test that calls the coun
 - **WHEN** an attacker deliberately triggers lockout on a victim's account and stops
 - **THEN** the victim regains access after the window elapses without contacting an administrator
 
-### Requirement: Limiting reveals nothing about which accounts exist
-
-Attempts against an unregistered identifier SHALL consume the same counters and produce the same response shape and status as attempts against a registered one.
-
-Neither the response body, the status code, nor the presence of rate-limit metadata may differ based on whether the account exists.
-
-#### Scenario: Unregistered identifier
-
-- **WHEN** repeated sign-in attempts are made against an address with no account
-- **THEN** counters are consumed and the responses are indistinguishable from attempts against a registered address
-
-#### Scenario: Limiter is not an existence oracle
-
-- **WHEN** an attacker compares rate-limit behaviour for a registered and an unregistered address
-- **THEN** the number of attempts permitted and the resulting responses are the same for both
-
-#### Scenario: Lockout state is not disclosed differently
-
-- **WHEN** an account is locked out and an attempt is made against it, and separately against an unregistered address that has crossed the same threshold
-- **THEN** both responses carry the same status and shape
-
-### Requirement: Rate-limit identity is not client-controlled
-
-Client address resolution SHALL be configurable and MUST NOT trust forwarded-address headers by default.
-
-Forwarded headers SHALL be honoured only when the deployment is explicitly configured to trust its proxy, so a client cannot forge its own rate-limit identity to bypass limits. Express's proxy trust setting and the authentication library's address-header configuration MUST be driven from the same configuration value.
-
-#### Scenario: Forwarded header not trusted by default
-
-- **WHEN** proxy trust is not enabled and a client sends a forged forwarded-address header while exceeding the limit
-- **THEN** the header is ignored and the client remains rate limited
-
-#### Scenario: Proxy trust enabled
-
-- **WHEN** proxy trust is enabled and requests arrive through a load balancer
-- **THEN** the client address is taken from the forwarded header so limits apply per real client rather than per balancer
-
-#### Scenario: One configuration value drives both
-
-- **WHEN** proxy trust is configured
-- **THEN** the framework's trust setting and the authentication library's address-header configuration agree, with no second place to configure it
-
-### Requirement: Account identifiers are not stored in cleartext limiter keys
-
-Counter keys derived from a submitted account identifier SHALL use a hash of the normalized identifier rather than the identifier itself.
-
-Identifier normalization MUST be consistent, so case variations of the same address share one counter.
-
-#### Scenario: Keyspace inspection
-
-- **WHEN** the limiter's storage keyspace is inspected
-- **THEN** no raw email address appears in a key
-
-#### Scenario: Case variants share a counter
-
-- **WHEN** failed attempts are made against the same address with differing letter case
-- **THEN** they count against a single counter
-
 ### Requirement: A limiter outage fails closed on the auth surface only
 
 If the rate limiter's storage is unavailable, authentication routes SHALL reject requests rather than serve them unmetered.
@@ -191,17 +125,3 @@ Fail-closed MUST be a property of the counter path rather than a stated intentio
 
 - **WHEN** a sign-in is rejected because the limiter is unavailable
 - **THEN** the response indicates a temporary service condition rather than invalid credentials
-
-### Requirement: Rate-limited responses tell the client when to retry
-
-A rate-limited response SHALL use status `429` with the `RATE_LIMITED` error code where the application's error envelope applies, and SHALL indicate how long the client must wait.
-
-#### Scenario: Retry timing communicated
-
-- **WHEN** a request is rejected for exceeding a limit
-- **THEN** the response indicates the wait before a retry will be accepted
-
-#### Scenario: Code on enveloped routes
-
-- **WHEN** a rate-limited response is produced on a route covered by the application error envelope
-- **THEN** the body carries error code `RATE_LIMITED`

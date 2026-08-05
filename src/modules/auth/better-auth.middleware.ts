@@ -6,6 +6,28 @@ import type { AuthInstance } from './auth.factory';
 import { AUTH_INSTANCE } from './auth.tokens';
 import { stampClientIp } from './client-ip';
 
+interface ServiceConditionError {
+  statusCode: number;
+  body?: { code?: string; message?: string };
+}
+
+/**
+ * Duck-typed for the same reason `AllExceptionsFilter` duck-types it: matching on
+ * shape avoids a value import from an ESM-only package on a hot path, and class
+ * identity is not dependable across this project's CommonJS/ESM boundary.
+ */
+function isServiceConditionError(
+  error: unknown,
+): error is ServiceConditionError {
+  return (
+    typeof error === 'object' &&
+    error !== null &&
+    (error as { name?: unknown }).name === 'APIError' &&
+    typeof (error as { statusCode?: unknown }).statusCode === 'number' &&
+    (error as { statusCode: number }).statusCode >= 500
+  );
+}
+
 /**
  * Hands `/api/auth/*` to Better Auth's own router.
  *
@@ -43,7 +65,55 @@ export class BetterAuthMiddleware implements NestMiddleware {
     this.restoreOriginalUrl(request);
     this.mirrorRetryAfter(response);
 
-    this.handler(request, response).catch(next);
+    this.handler(request, response).catch((error: unknown) => {
+      if (this.reportedAsServiceCondition(response, error)) {
+        return;
+      }
+
+      next(error);
+    });
+  }
+
+  /**
+   * Answers a throw from Better Auth's request phase with its own status.
+   *
+   * Needed because an error raised in the library's `onRequest` — which is where
+   * rate limiting runs — **escapes `handler()` entirely** rather than being
+   * converted into a `Response` the way a throw inside a route is. Two
+   * consequences follow, and both erase the distinction the caller needs:
+   *
+   * - Passed to `next()`, it leaves through Express's default error handler.
+   *   Middleware registered via `MiddlewareConsumer` sits outside the Nest
+   *   pipeline, so `AllExceptionsFilter` never sees it — as that filter's own
+   *   comment notes, the library's routes never enter it.
+   * - Even if it did reach the filter, `resolveBetterAuthError` deliberately
+   *   collapses every library `5xx` into `500 INTERNAL_ERROR`.
+   *
+   * So a limiter outage would present as an opaque `500`: indistinguishable from
+   * a bug, when what the caller needs to know is "this is temporary, retry
+   * shortly". On a credential endpoint that difference decides whether a client
+   * backs off or hammers the dependency that is already down.
+   *
+   * Narrow by design — only a Better Auth `APIError` carrying a `5xx` is handled
+   * here. Anything else is a genuine fault and still goes to `next()`, so this
+   * cannot quietly swallow a real error. The body matches the library's own
+   * `{ code, message }` shape rather than the application envelope, because this
+   * surface is not enveloped (see the `api-response-envelope` carve-out).
+   */
+  private reportedAsServiceCondition(
+    response: Response,
+    error: unknown,
+  ): boolean {
+    if (response.headersSent || !isServiceConditionError(error)) {
+      return false;
+    }
+
+    response.status(error.statusCode).json({
+      code: error.body?.code ?? 'SERVICE_UNAVAILABLE',
+      message: error.body?.message ?? 'The service is temporarily unavailable.',
+    });
+
+    return true;
   }
 
   /**

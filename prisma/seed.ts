@@ -1,7 +1,9 @@
 import { PrismaPg } from '@prisma/adapter-pg';
 import { config as loadEnvFiles } from 'dotenv';
+import { Redis } from 'ioredis';
 
 import { PrismaClient } from '../src/generated/prisma/client';
+import { advancePermissionVersion } from '../src/modules/authorization/permission-cache-version';
 import {
   BASELINE_ROLES,
   PERMISSION_DESCRIPTIONS,
@@ -33,6 +35,68 @@ async function seed(prisma: PrismaClient): Promise<void> {
 
   await seedAccessControl(prisma);
   await seedPlans(prisma);
+
+  await invalidatePermissionCache();
+}
+
+/**
+ * Advances the permission cache marker so a running instance observes the grants
+ * this seed just wrote.
+ *
+ * Without it, `PermissionResolver` keeps serving effective-permission sets cached
+ * under the previous marker until they expire — so re-running the seed against an
+ * environment that is serving traffic changes the database and changes nothing a
+ * caller can see for up to `PERMISSION_CACHE_TTL_SECONDS`. That gap is precisely
+ * the "a mutation MUST cause subsequent requests to observe the new state"
+ * requirement, and the seed is the most likely thing to break it.
+ *
+ * Its own short-lived connection: this script has no Nest container and no shared
+ * client. `advancePermissionVersion` is shared with the resolver rather than
+ * duplicated here, because two places computing a version key is how they drift.
+ */
+async function invalidatePermissionCache(): Promise<void> {
+  const url = process.env.REDIS_URL;
+
+  if (!url) {
+    console.warn(
+      'REDIS_URL is not set; skipped permission cache invalidation. A running ' +
+        'instance may serve stale role mappings until its cache expires.',
+    );
+    return;
+  }
+
+  /**
+   * `lazyConnect` plus an explicit `connect()` so an unreachable Redis surfaces
+   * here as a caught error rather than as a background retry loop that keeps the
+   * process alive after seeding has finished.
+   */
+  const redis = new Redis(url, {
+    lazyConnect: true,
+    maxRetriesPerRequest: 1,
+    enableOfflineQueue: false,
+  });
+
+  try {
+    await redis.connect();
+    await advancePermissionVersion(redis);
+    console.log('Permission cache invalidated.');
+  } catch (error: unknown) {
+    /**
+     * Not a seed failure. Seeding a fresh database with no Redis running is a
+     * normal development state, and in that case there is no cache to invalidate
+     * — reads already fall through to Postgres. Warned rather than silent because
+     * in a deployment where an instance *is* running, this is the window in
+     * which it serves stale grants.
+     */
+    console.warn(
+      `Could not invalidate the permission cache (${
+        error instanceof Error ? error.message : String(error)
+      }). If an instance is running, it may serve stale role mappings until its ` +
+        'cache expires.',
+    );
+  } finally {
+    redis.disconnect();
+  }
 }
 
 /**

@@ -179,6 +179,41 @@ describe('Two-factor authentication (integration)', () => {
       expect(status.body.data.enabled).toBe(false);
     });
 
+    /**
+     * Backup codes are handed out at enrolment *start*, before confirmation — a
+     * user needs them in hand before committing to a second factor, and revealing
+     * them only afterwards invites confirming first and recording them later.
+     *
+     * What makes that safe is asserted here: while enrolment is unconfirmed, 2FA
+     * is inactive, sign-in raises no challenge, and so there is nothing for a
+     * backup code to satisfy. The codes exist but confer nothing.
+     */
+    it('issues backup codes at enrolment start that confer nothing while inactive', async () => {
+      const user = await freshUser('tfa-unconfirmed-codes');
+
+      const enable = await post('/api/v1/account/two-factor/enable', user).send(
+        { password: TEST_PASSWORD },
+      );
+
+      const issued = (enable.body as { data?: { backupCodes?: string[] } }).data
+        ?.backupCodes;
+
+      // Issued up front, at step one.
+      expect(issued?.length).toBeGreaterThan(0);
+
+      const signIn = await request(server())
+        .post('/api/auth/sign-in/email')
+        .send({ email: user.email, password: TEST_PASSWORD });
+
+      /**
+       * No challenge is raised, so the codes have nothing to redeem. A plain
+       * session is established from the password alone, exactly as for an account
+       * that never began enrolment.
+       */
+      expect(signIn.status).toBeLessThan(400);
+      expect(signIn.body.twoFactorRedirect).toBeFalsy();
+    });
+
     it('activates on a valid code and issues backup codes', async () => {
       const user = await freshUser('tfa-activate');
       const { backupCodes } = await enrol(user);

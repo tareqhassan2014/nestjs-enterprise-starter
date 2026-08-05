@@ -41,6 +41,40 @@ function minutes(seconds: number): number {
 }
 
 /**
+ * Refuses to boot if the credential limiter would run unmetered and non-atomic.
+ *
+ * Better Auth selects its atomic `consume` path only `if
+ * (secondaryStorage?.increment)`, and otherwise falls back to `legacyConsume` —
+ * a check-then-write over two round trips that reads counters through `get`.
+ * Since `get` converts a Redis outage into `null`, and `null` reads as a fresh
+ * window, losing this one method silently turns the configured ceiling advisory
+ * *and* inverts the outage posture from fail-closed to fail-open.
+ *
+ * Silently is the operative word: no error, no failing request, nothing in a log
+ * to notice. That is what justifies failing at boot over something a reviewer
+ * would ordinarily trust the type system to hold — the method is not declared in
+ * the installed package's exported `SecondaryStorage` type, so nothing else
+ * makes it load-bearing to the compiler.
+ *
+ * This guards our side of the contract. A rename on the *library's* side would
+ * satisfy this check and still break the wiring, which is why
+ * `rate-limit-storage.spec.ts` asserts behaviourally that the library really
+ * does reach for `increment`.
+ */
+function assertAtomicRateLimitStorage(
+  secondaryStorage: RedisSecondaryStorage,
+): void {
+  if (typeof secondaryStorage.increment !== 'function') {
+    throw new Error(
+      'RedisSecondaryStorage must implement `increment` — without it Better Auth ' +
+        'falls back to a non-atomic limiter that fails open when Redis is ' +
+        'unavailable. See redis-secondary-storage.ts and the auth-rate-limiting ' +
+        'capability.',
+    );
+  }
+}
+
+/**
  * Builds the Better Auth instance from validated configuration.
  *
  * A plain function rather than a Nest provider body so it can be constructed in
@@ -56,6 +90,8 @@ export function createAuth({
   auth,
   security,
 }: AuthFactoryDependencies) {
+  assertAtomicRateLimitStorage(secondaryStorage);
+
   return betterAuth({
     appName: 'nestjs-enterprise-starter',
 
@@ -240,15 +276,49 @@ export function createAuth({
           return;
         }
 
-        const decision = await lockout.check(identifier);
+        /**
+         * A storage failure here is refused, not ignored, and is reported as a
+         * temporary condition for the same reason the per-address limiter is:
+         * `check` cannot distinguish "no failures recorded" from "cannot reach
+         * the record", and treating the second as the first would disable
+         * lockout during exactly the outage an attacker would want it disabled.
+         *
+         * Rethrown as an `APIError` so `BetterAuthMiddleware` can answer it with
+         * a `503` — a bare throw escapes the library's handler and becomes an
+         * opaque `500`. See the note on `reportedAsServiceCondition`.
+         */
+        let decision: Awaited<ReturnType<typeof lockout.check>>;
+
+        try {
+          decision = await lockout.check(identifier);
+        } catch {
+          throw new APIError('SERVICE_UNAVAILABLE', {
+            code: 'LOCKOUT_STORE_UNAVAILABLE',
+            message:
+              'Sign-in is temporarily unavailable. Please try again in a moment.',
+          });
+        }
 
         if (decision.locked) {
-          throw new APIError('TOO_MANY_REQUESTS', {
-            code: 'ACCOUNT_LOCKED',
-            message:
-              'Too many failed sign-in attempts. Try again shortly — no action is needed on your part.',
-            retryAfter: decision.retryAfterSeconds,
-          });
+          /**
+           * The header is set here, not left to `mirrorRetryAfter` to discover.
+           * That mirror copies `X-Retry-After` → `Retry-After`, but only the
+           * library's *own* limiter emits that header — a `retryAfter` field in
+           * an `APIError` body is just body content. So without this, a
+           * locked-out caller received the wait in JSON and no standard header
+           * at all, which is the case `mirrorRetryAfter` exists to prevent.
+           * Emitting the `X-` form keeps one mechanism rather than two.
+           */
+          throw new APIError(
+            'TOO_MANY_REQUESTS',
+            {
+              code: 'ACCOUNT_LOCKED',
+              message:
+                'Too many failed sign-in attempts. Try again shortly — no action is needed on your part.',
+              retryAfter: decision.retryAfterSeconds,
+            },
+            { 'X-Retry-After': String(decision.retryAfterSeconds) },
+          );
         }
       }),
 
@@ -282,8 +352,18 @@ export function createAuth({
         const status =
           typeof returned?.statusCode === 'number' ? returned.statusCode : 200;
 
-        // Already refused by a limiter: counting it again would let an attacker
-        // inflate a victim's backoff for free.
+        /**
+         * Already refused by a limiter or by the lock itself: counting it again
+         * would let an attacker inflate a victim's backoff for free.
+         *
+         * Skipping *every* `429` is what makes escalation work, which is not
+         * obvious. The lock is a timestamp, not a threshold comparison — so once
+         * the stamped moment passes, `check` reports unlocked, the next attempt
+         * reaches the credential check, and its failure is counted here and
+         * escalates the delay. Were the lock instead implied by
+         * `failures >= threshold`, this same skip would pin the counter at the
+         * threshold forever and the exponential branch would be dead code.
+         */
         if (status === 429) {
           return;
         }

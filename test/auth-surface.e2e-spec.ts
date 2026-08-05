@@ -25,12 +25,14 @@ describe('Authentication surface (integration)', () => {
   let app: NestExpressApplication;
   let prisma: PrismaService;
   let mail: MailRecorder;
+  let redis: { del: (...keys: string[]) => Promise<number> };
   const createdEmails: string[] = [];
 
   beforeAll(async () => {
     app = await createTestApp();
     prisma = app.get(PrismaService);
     mail = app.get(MailRecorder);
+    redis = app.get(REDIS_CLIENT);
 
     // Counters from an earlier run would otherwise 429 these cases.
     await clearAuthLimiterState(app.get(REDIS_CLIENT));
@@ -150,6 +152,93 @@ describe('Authentication surface (integration)', () => {
 
       expect(response.status).toBeGreaterThanOrEqual(400);
       expect(response.headers['set-cookie']).toBeUndefined();
+    });
+
+    /**
+     * The guard's own branch, which the case above cannot reach.
+     *
+     * Better Auth refuses to issue a session for an unverified address, so a
+     * valid session on an unverified account only arises if verification is
+     * revoked after the fact — an operator clearing the flag, or a data fix. The
+     * flag is flipped directly here to construct exactly that state, because it is
+     * the state `AuthGuard` exists to catch and otherwise nothing would exercise
+     * it.
+     *
+     * The status is asserted alongside the code because both are the contract: a
+     * `401` would tell the client to discard a session that is in fact valid and
+     * sign in again, which cannot resolve an unverified address.
+     */
+    it('answers 403 EMAIL_NOT_VERIFIED for a valid session on an unverified account', async () => {
+      const email = uniqueEmail('verified-then-revoked');
+      createdEmails.push(email);
+      await signUp(email);
+
+      const link = mail.lastLinkTo(email);
+      expect(link).toBeDefined();
+      await follow(link as string);
+
+      const signedIn = await signIn(email);
+      const setCookie = (signedIn.headers['set-cookie'] ??
+        []) as unknown as string[];
+      const sessionCookie = setCookie.find((cookie) =>
+        cookie.includes('session_token'),
+      );
+      expect(sessionCookie).toBeDefined();
+
+      const cookiePair = (sessionCookie as string).split(';')[0];
+
+      /**
+       * The cookie value is `<token>.<signature>` — cookies are signed — while the
+       * cache is keyed by the bare token, so the signature has to come off first.
+       * Confirmed against the live keyspace: session entries are the 32-character
+       * token alone.
+       */
+      const token = decodeURIComponent(cookiePair.split('=')[1] ?? '').split(
+        '.',
+      )[0];
+
+      // Revoke verification behind the session's back.
+      await prisma.user.update({
+        where: { email },
+        data: { emailVerified: false },
+      });
+
+      /**
+       * The cached copy has to go too, and finding that out is worth recording.
+       *
+       * Better Auth caches the session **with its user record** in Redis, keyed by
+       * the session token. So a database-only edit is invisible to `getSession`
+       * until that entry expires — meaning revoking verification mid-session is not
+       * observed while the session is cached. Narrow in practice (verification is
+       * normally one-way, and Better Auth already refuses to issue a session for an
+       * unverified address, which is the primary gate), so it is noted here rather
+       * than treated as a defect in this change.
+       *
+       * Dropping the entry is what puts the guard in front of the authoritative
+       * store, which is the branch under test.
+       */
+      await redis.del(token);
+
+      const response = await request(app.getHttpServer())
+        .get('/api/v1/account/me')
+        .set('Cookie', cookiePair);
+
+      expect(response.status).toBe(403);
+      expect((response.body as { error?: { code?: string } }).error?.code).toBe(
+        'EMAIL_NOT_VERIFIED',
+      );
+    });
+
+    /** The sibling case, pinned so the two remain distinguishable. */
+    it('answers 401 UNAUTHORIZED when no session is presented at all', async () => {
+      const response = await request(app.getHttpServer()).get(
+        '/api/v1/account/me',
+      );
+
+      expect(response.status).toBe(401);
+      expect((response.body as { error?: { code?: string } }).error?.code).toBe(
+        'UNAUTHORIZED',
+      );
     });
 
     it('establishes a session once verified', async () => {

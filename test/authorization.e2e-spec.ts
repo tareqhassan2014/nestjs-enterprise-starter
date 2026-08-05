@@ -4,6 +4,10 @@ import request from 'supertest';
 import { MailRecorder } from '@infrastructure/mail/mail-recorder';
 import { PrismaService } from '@infrastructure/prisma/prisma.service';
 import { REDIS_CLIENT } from '@infrastructure/redis/redis.constants';
+import {
+  type VersionStore,
+  advancePermissionVersion,
+} from '@modules/authorization/permission-cache-version';
 import { PermissionResolver } from '@modules/authorization/permission-resolver.service';
 
 import {
@@ -25,6 +29,8 @@ describe('Authorization (integration)', () => {
   let prisma: PrismaService;
   let mail: MailRecorder;
   let resolver: PermissionResolver;
+  /** The raw client, for invalidating the way a script outside Nest would. */
+  let redis: VersionStore;
 
   /** Holds the `user` role: authority over its own account only. */
   let member: TestUser;
@@ -40,6 +46,7 @@ describe('Authorization (integration)', () => {
     prisma = app.get(PrismaService);
     mail = app.get(MailRecorder);
     resolver = app.get(PermissionResolver);
+    redis = app.get(REDIS_CLIENT);
 
     await clearAuthLimiterState(app.get(REDIS_CLIENT));
 
@@ -297,6 +304,61 @@ describe('Authorization (integration)', () => {
         // Cascades take the mapping and the assignment with the role.
         await prisma.role.delete({ where: { id: scratchRole.id } });
         await resolver.invalidate();
+      }
+    });
+
+    /**
+     * Invalidation through the path a script uses, not the injected service.
+     *
+     * Every other case here calls `resolver.invalidate()`, which needs the Nest
+     * container. That made "a mutation is observed on the next request" a property
+     * of the test harness: the seed rewrites role mappings, has no container, and
+     * never advanced the marker — so re-seeding a running environment changed the
+     * database and changed nothing a caller could see until the cache expired.
+     *
+     * This calls `advancePermissionVersion` with a plain client, exactly as
+     * `prisma/seed.ts` now does, so the mechanism the seed depends on is the one
+     * under test.
+     */
+    it('observes a mapping change invalidated from outside the container', async () => {
+      const scratchRole = await prisma.role.create({
+        data: {
+          name: `scratch-outside-${Date.now()}`,
+          description: 'Created by the authorization suite; safe to delete.',
+        },
+      });
+
+      const permission = await prisma.permission.findUniqueOrThrow({
+        where: { key: 'user:list' },
+      });
+
+      try {
+        await prisma.userRole.create({
+          data: { userId: roleless.userId, roleId: scratchRole.id },
+        });
+        await advancePermissionVersion(redis);
+
+        // Warm the cache under the current marker, so the assertion below can
+        // only pass if the marker actually advanced.
+        await expect(
+          as('/api/v1/authz-fixture/list-users', roleless).then(
+            (r) => r.status,
+          ),
+        ).resolves.toBe(403);
+
+        await prisma.rolePermission.create({
+          data: { roleId: scratchRole.id, permissionId: permission.id },
+        });
+        await advancePermissionVersion(redis);
+
+        await expect(
+          as('/api/v1/authz-fixture/list-users', roleless).then(
+            (r) => r.status,
+          ),
+        ).resolves.toBe(200);
+      } finally {
+        await prisma.role.delete({ where: { id: scratchRole.id } });
+        await advancePermissionVersion(redis);
       }
     });
 

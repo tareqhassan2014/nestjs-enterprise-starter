@@ -5,14 +5,16 @@ import { RequestContext } from '@common/context/request-context';
 import { PrismaService } from '@infrastructure/prisma/prisma.service';
 import { REDIS_CLIENT } from '@infrastructure/redis/redis.constants';
 
+import {
+  PERMISSION_CACHE_TTL_SECONDS,
+  advancePermissionVersion,
+  readPermissionVersion,
+} from './permission-cache-version';
+
 export interface EffectiveAccess {
   roles: string[];
   permissions: string[];
 }
-
-/** Bumped by any role, mapping, or assignment change; see `invalidate()`. */
-const VERSION_KEY = 'authz:version';
-const CACHE_TTL_SECONDS = 300;
 
 @Injectable()
 export class PermissionResolver {
@@ -54,14 +56,14 @@ export class PermissionResolver {
   /**
    * Invalidates every cached permission set by advancing the version.
    *
-   * A bump rather than a delete: a single role's mapping can affect thousands of
-   * users, and there is no key to enumerate for "everyone who holds this role".
-   * Entries written under the previous version simply become unreachable and
-   * expire on their TTL. Costs memory for a few minutes; never serves stale.
+   * The mechanism lives in `permission-cache-version.ts` so the seed and any
+   * operator tooling can advance the same marker without a Nest container — see
+   * the note there. This method is the in-process entry point to it, not a second
+   * implementation.
    */
   async invalidate(): Promise<void> {
     try {
-      await this.redis.incr(await this.ensureVersionKey());
+      await advancePermissionVersion(this.redis);
     } catch (error: unknown) {
       // Without Redis there is no cache to invalidate, so there is nothing to
       // get wrong: reads are already falling through to Postgres.
@@ -71,28 +73,11 @@ export class PermissionResolver {
 
   private async currentVersion(): Promise<number | null> {
     try {
-      const key = await this.ensureVersionKey();
-      const raw = await this.redis.get(key);
-
-      return raw === null ? null : Number.parseInt(raw, 10);
+      return await readPermissionVersion(this.redis);
     } catch (error: unknown) {
       this.degraded('version read', error);
       return null;
     }
-  }
-
-  /**
-   * Seeds the version from the current clock the first time it is needed.
-   *
-   * Deliberately not from zero. If the version key is lost — eviction, a flush,
-   * a fresh Redis — restarting at zero could make entries written under an
-   * earlier version readable again, resurrecting stale permissions. Seeding from
-   * a timestamp makes the counter monotonic across restarts: it can only ever
-   * jump forward.
-   */
-  private async ensureVersionKey(): Promise<string> {
-    await this.redis.set(VERSION_KEY, `${Date.now()}`, 'NX');
-    return VERSION_KEY;
   }
 
   private async readCache(
@@ -119,7 +104,7 @@ export class PermissionResolver {
         this.cacheKey(userId, version),
         JSON.stringify(access),
         'EX',
-        CACHE_TTL_SECONDS,
+        PERMISSION_CACHE_TTL_SECONDS,
       );
     } catch (error: unknown) {
       this.degraded('write', error);

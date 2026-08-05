@@ -176,6 +176,10 @@ Effective permission sets SHALL be resolved at most once per request and MAY be 
 
 A mutation to any role, mapping, or assignment MUST cause subsequent requests to observe the new state. A cache read failure MUST fall back to the persisted store rather than deny the request.
 
+The invalidation path MUST be reachable from every process that mutates access-control data, including one that is not the running application — the seed and any operator tooling mutate the same tables and MUST be able to advance the marker without a running instance. An invalidation mechanism callable only from inside the application process, or only from a test, does not satisfy this requirement: it makes the guarantee an artefact of the test harness rather than a property of the system.
+
+Where a mutation is applied without advancing the marker, the resulting staleness SHALL be bounded by the cache entry lifetime, and that bound SHALL be documented as the worst case rather than left implied. A caller MUST NOT have to infer it from a constant in the source.
+
 #### Scenario: Repeated checks within one request
 
 - **WHEN** a single request evaluates two permission requirements
@@ -190,6 +194,21 @@ A mutation to any role, mapping, or assignment MUST cause subsequent requests to
 
 - **WHEN** a role is removed from a user
 - **THEN** their next request no longer carries that role's permissions
+
+#### Scenario: Seed advances the marker
+
+- **WHEN** the seed runs against a migrated database while an application instance is serving traffic
+- **THEN** the marker is advanced, and a user whose grants the seed changed is evaluated against the new mapping on their next request
+
+#### Scenario: Invalidation is reachable outside the application process
+
+- **WHEN** the invalidation path is inspected
+- **THEN** it can be invoked by a process that is not the running application, without depending on the application's dependency injection container
+
+#### Scenario: Staleness bound is stated
+
+- **WHEN** a mutation is applied without advancing the marker
+- **THEN** the delay before it is observed is no longer than the documented cache entry lifetime
 
 #### Scenario: Cache unavailable
 
