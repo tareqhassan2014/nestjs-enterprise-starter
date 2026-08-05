@@ -70,8 +70,10 @@ function resolveRouteTemplate(
   context: ExecutionContext,
   request: Request,
 ): string {
+  // `matchedRoutePath` already returns `string | undefined`, so an empty path
+  // is the only case left to reject here.
   const nestPath = matchedRoutePath(request);
-  if (typeof nestPath === 'string' && nestPath.length > 0) {
+  if (nestPath) {
     const globalPrefix = 'api';
     // Nest route.path is relative to the controller; prefer originalUrl stripped of query + ids is hard —
     // use Express layer path when present.
