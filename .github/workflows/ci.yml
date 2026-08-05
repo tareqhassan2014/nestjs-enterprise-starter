@@ -93,16 +93,18 @@ jobs:
         if: matrix.node-version >= 24
         run: pnpm test
 
-      # Migrating and seeding only serve the e2e step, so they follow its gate.
+      # Database setup is NOT gated with the suites above. The boot smoke test
+      # starts the real application, and PlanResolutionService reads `plans`
+      # during onModuleInit — so an unmigrated database fails the boot on any
+      # cell, including one that skips the tests. Both steps are idempotent.
       - name: Apply migrations
-        if: matrix.node-version >= 24
         run: pnpm db:migrate:deploy
 
       # The access-control suites assert on the seeded permission catalogue and
       # baseline roles, so seeding is a prerequisite for e2e rather than an
-      # optional convenience.
+      # optional convenience. It also keeps the boot environment identical
+      # across matrix cells.
       - name: Seed baseline roles and permissions
-        if: matrix.node-version >= 24
         run: pnpm db:seed
 
       - name: End-to-end and integration tests

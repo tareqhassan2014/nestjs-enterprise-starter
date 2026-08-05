@@ -37,11 +37,13 @@ export function requestPath(req: {
  * The route template Express matched (`/credits/:packSlug`), when there is one.
  *
  * `@types/express` types `Request['route']` as `any`, so reading `.route.path`
- * off a `Request` spreads `any` into the caller. Accepting the request as a
- * structural type keeps the access checked at this boundary instead.
+ * off a `Request` spreads `any` into the caller. Accepting a structural shape
+ * and narrowing `path` with `typeof` keeps the return type `string | undefined`
+ * with no `any`/`error` leakage at call sites.
  */
 export function matchedRoutePath(req: {
-  route?: { path?: string };
+  route?: { path?: unknown };
 }): string | undefined {
-  return req.route?.path;
+  const path = req.route?.path;
+  return typeof path === 'string' ? path : undefined;
 }
