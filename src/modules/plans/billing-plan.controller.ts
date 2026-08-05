@@ -1,5 +1,7 @@
 import { Controller, Get } from '@nestjs/common';
+import { ApiTags } from '@nestjs/swagger';
 
+import { ApiSessionAuth } from '@infrastructure/openapi/api-session-auth.decorator';
 import { CurrentUser } from '@modules/auth/auth.decorators';
 import type { AuthenticatedPrincipal } from '@modules/auth/auth.service';
 
@@ -22,6 +24,8 @@ interface CurrentPlanView {
   limits: Record<string, { daily: number; weekly: number }>;
 }
 
+@ApiTags('Account')
+@ApiSessionAuth()
 @Controller({ path: 'billing', version: '1' })
 export class BillingPlanController {
   constructor(private readonly plans: PlanResolutionService) {}

@@ -1,8 +1,16 @@
 import { Controller, Get, Query } from '@nestjs/common';
 import { ApiTags } from '@nestjs/swagger';
 import { Type } from 'class-transformer';
-import { IsInt, IsISO8601, IsOptional, IsString, Max, Min } from 'class-validator';
+import {
+  IsInt,
+  IsISO8601,
+  IsOptional,
+  IsString,
+  Max,
+  Min,
+} from 'class-validator';
 
+import { ApiSessionAuth } from '@infrastructure/openapi/api-session-auth.decorator';
 import { RequirePermissions } from '@modules/authorization/authorization.decorators';
 
 import { AuditLogService } from './audit-log.service';
@@ -43,6 +51,7 @@ class AuditListQueryDto {
 }
 
 @ApiTags('Admin')
+@ApiSessionAuth()
 @Controller({ path: 'admin/audit', version: '1' })
 @RequirePermissions('admin:audit:read')
 export class AdminAuditController {

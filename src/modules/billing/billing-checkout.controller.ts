@@ -1,9 +1,11 @@
 import { Body, Controller, HttpStatus, Post } from '@nestjs/common';
+import { ApiTags } from '@nestjs/swagger';
 import { IsString, MinLength } from 'class-validator';
 
 import { ApiException } from '@common/errors/api-exception';
 import { ErrorCode } from '@common/errors/error-code';
 import { Idempotent } from '@common/idempotency/idempotent.decorator';
+import { ApiSessionAuth } from '@infrastructure/openapi/api-session-auth.decorator';
 import { CurrentUser } from '@modules/auth/auth.decorators';
 import type { AuthenticatedPrincipal } from '@modules/auth/auth.service';
 
@@ -15,6 +17,8 @@ class CreateCheckoutDto {
   pack!: string;
 }
 
+@ApiTags('Account')
+@ApiSessionAuth()
 @Controller({ path: 'billing', version: '1' })
 export class BillingCheckoutController {
   constructor(private readonly topup: StripeTopupService) {}

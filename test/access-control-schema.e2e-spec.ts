@@ -80,6 +80,8 @@ describe('Access-control schema and seed (integration)', () => {
         'account:delete',
         'account:read',
         'account:update',
+        'api-keys:manage',
+        'mcp:tools:invoke',
       ]);
       expect(granted).not.toContain('user:list');
     });
@@ -222,9 +224,9 @@ describe('Access-control schema and seed (integration)', () => {
       ]);
 
       for (const plan of planRows) {
-        expect(plan.entitlements.map((row) => row.entitlementKey).sort()).toEqual(
-          ['feature.advanced', 'feature.priority_support'].sort(),
-        );
+        expect(
+          plan.entitlements.map((row) => row.entitlementKey).sort(),
+        ).toEqual(['feature.advanced', 'feature.priority_support'].sort());
         expect(plan.usageLimits.some((row) => row.feature === 'demo')).toBe(
           true,
         );
@@ -233,12 +235,14 @@ describe('Access-control schema and seed (integration)', () => {
       const lite = planRows.find((plan) => plan.slug === 'lite')!;
       const pro = planRows.find((plan) => plan.slug === 'pro')!;
       expect(
-        lite.entitlements.find((row) => row.entitlementKey === 'feature.advanced')
-          ?.enabled,
+        lite.entitlements.find(
+          (row) => row.entitlementKey === 'feature.advanced',
+        )?.enabled,
       ).toBe(false);
       expect(
-        pro.entitlements.find((row) => row.entitlementKey === 'feature.advanced')
-          ?.enabled,
+        pro.entitlements.find(
+          (row) => row.entitlementKey === 'feature.advanced',
+        )?.enabled,
       ).toBe(true);
     });
 

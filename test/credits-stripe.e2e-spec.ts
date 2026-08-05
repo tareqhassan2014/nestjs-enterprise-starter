@@ -2,6 +2,7 @@ import type { NestExpressApplication } from '@nestjs/platform-express';
 import request from 'supertest';
 
 import { stripeConfig } from '@config/stripe.config';
+import { redisConfig } from '@config/redis.config';
 import { usageLimitsConfig } from '@config/usage-limits.config';
 import { MailRecorder } from '@infrastructure/mail/mail-recorder';
 import { PrismaService } from '@infrastructure/prisma/prisma.service';
@@ -50,9 +51,9 @@ const tightPlans: Pick<
   | 'hasEntitlement'
   | 'meetsMinimumPlan'
 > = {
-  onModuleInit: async () => undefined,
-  reloadMatrices: async () => undefined,
-  resolve: async () => tightPlan,
+  onModuleInit: () => Promise.resolve(),
+  reloadMatrices: () => Promise.resolve(),
+  resolve: () => Promise.resolve(tightPlan),
   usageCeiling: (_plan, _feature, period) =>
     period === 'day' ? DAILY : WEEKLY,
   hasEntitlement: (plan, key) => plan.entitlements[key] === true,
@@ -120,7 +121,10 @@ describe('Credits and Stripe top-up (integration)', () => {
             webhooks: {
               constructEvent: mockConstructEvent,
             },
-          }),
+          })
+          // Isolate usage counters from other e2e suites (usage-limits uses /11).
+          .overrideProvider(redisConfig.KEY)
+          .useValue({ ...redisConfig(), url: `${redisConfig().url}/12` }),
       [CreditsFixtureModule],
     );
     prisma = app.get(PrismaService);
@@ -259,6 +263,7 @@ describe('Credits and Stripe top-up (integration)', () => {
       const response = await request(server())
         .post('/api/v1/billing/checkout')
         .set('Cookie', user.cookie)
+        .set('Idempotency-Key', `checkout-${user.userId}-starter`)
         .send({ pack: 'starter' });
 
       expect(response.status).toBe(201);
@@ -272,6 +277,7 @@ describe('Credits and Stripe top-up (integration)', () => {
       const response = await request(server())
         .post('/api/v1/billing/checkout')
         .set('Cookie', user.cookie)
+        .set('Idempotency-Key', `checkout-${user.userId}-nope`)
         .send({ pack: 'nope' });
 
       expect(response.status).toBe(400);

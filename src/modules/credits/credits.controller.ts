@@ -1,11 +1,15 @@
 import { Controller, Get, Query } from '@nestjs/common';
+import { ApiTags } from '@nestjs/swagger';
 
+import { ApiSessionAuth } from '@infrastructure/openapi/api-session-auth.decorator';
 import { CurrentUser } from '@modules/auth/auth.decorators';
 import type { AuthenticatedPrincipal } from '@modules/auth/auth.service';
 import { BillingSubjectResolver } from '@modules/organizations/billing-subject.resolver';
 
 import { CreditService } from './credit.service';
 
+@ApiTags('Account')
+@ApiSessionAuth()
 @Controller({ path: 'billing/credits', version: '1' })
 export class CreditsController {
   constructor(

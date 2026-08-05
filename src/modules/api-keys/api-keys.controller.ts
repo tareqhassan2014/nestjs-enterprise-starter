@@ -10,6 +10,7 @@ import {
 } from '@nestjs/common';
 import { ApiTags } from '@nestjs/swagger';
 
+import { ApiSessionAuth } from '@infrastructure/openapi/api-session-auth.decorator';
 import { CurrentUser } from '@modules/auth/auth.decorators';
 import type { AuthenticatedPrincipal } from '@modules/auth/auth.service';
 import { RequirePermissions } from '@modules/authorization/authorization.decorators';
@@ -19,6 +20,7 @@ import { ApiKeyService } from './api-key.service';
 import { CreateApiKeyDto } from './dto/create-api-key.dto';
 
 @ApiTags('Account')
+@ApiSessionAuth()
 @StrictThrottle()
 @RequirePermissions('api-keys:manage')
 @Controller({ path: 'account/api-keys', version: '1' })

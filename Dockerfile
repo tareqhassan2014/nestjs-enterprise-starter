@@ -22,7 +22,8 @@ RUN pnpm install --frozen-lockfile
 # ---------------------------------------------------------------------------
 FROM base AS prod-deps
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
-RUN pnpm install --frozen-lockfile --prod
+# prepare runs husky; husky is a devDependency and absent in --prod installs.
+RUN HUSKY=0 pnpm install --frozen-lockfile --prod
 
 # ---------------------------------------------------------------------------
 # Build: generate the Prisma client into src/, then compile src/ into dist/

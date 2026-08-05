@@ -1,11 +1,12 @@
 import type { ConfigType } from '@nestjs/config';
 import { NestFactory } from '@nestjs/core';
 import type { NestExpressApplication } from '@nestjs/platform-express';
-import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
+import { SwaggerModule } from '@nestjs/swagger';
 import { Logger } from 'nestjs-pino';
 
 import { appConfig } from '@config/app.config';
 import { observabilityConfig } from '@config/observability.config';
+import { createOpenApiDocument } from '@infrastructure/openapi/openapi.document';
 
 import { AppModule } from './app.module';
 import { APP_OPTIONS, configureApp } from './bootstrap';
@@ -29,26 +30,7 @@ async function bootstrap(): Promise<void> {
   );
 
   if (observability.swaggerEnabled) {
-    const document = SwaggerModule.createDocument(
-      app,
-      new DocumentBuilder()
-        .setTitle('NestJS Enterprise Starter')
-        .setDescription(
-          [
-            'Versioned Nest API under `/api/v1` uses the success/error envelope.',
-            'Outside that contract: `/api/auth/*` (Better Auth), `/health/*`,',
-            '`/metrics` (Prometheus text), and `POST /api/v1/billing/webhook`',
-            '(Stripe-minimal acknowledgements).',
-            'Admin routes are tagged `Admin` and require staff permissions.',
-          ].join(' '),
-        )
-        .setVersion('1')
-        .addTag('Admin', 'Operator monitoring and billing inspection')
-        .addTag('Account', 'Caller account and session surfaces')
-        .addTag('Public', 'Unauthenticated Nest routes')
-        .addCookieAuth('session_token')
-        .build(),
-    );
+    const document = createOpenApiDocument(app);
     SwaggerModule.setup('docs', app, document, {
       // Keep docs outside the versioned `/api` prefix.
       useGlobalPrefix: false,

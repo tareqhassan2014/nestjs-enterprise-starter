@@ -11,6 +11,7 @@ import {
 import { ApiTags } from '@nestjs/swagger';
 
 import { Idempotent } from '@common/idempotency/idempotent.decorator';
+import { ApiSessionAuth } from '@infrastructure/openapi/api-session-auth.decorator';
 import { CurrentUser } from '@modules/auth/auth.decorators';
 import type { AuthenticatedPrincipal } from '@modules/auth/auth.service';
 
@@ -19,6 +20,7 @@ import { CreateOrganizationDto } from './dto/create-organization.dto';
 import { OrganizationsService } from './organizations.service';
 
 @ApiTags('Organizations')
+@ApiSessionAuth()
 @Controller({ path: 'organizations', version: '1' })
 export class OrganizationsController {
   constructor(private readonly organizations: OrganizationsService) {}

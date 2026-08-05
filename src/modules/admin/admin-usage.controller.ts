@@ -1,16 +1,11 @@
-import {
-  Controller,
-  Get,
-  HttpStatus,
-  Param,
-  Query,
-} from '@nestjs/common';
+import { Controller, Get, HttpStatus, Param, Query } from '@nestjs/common';
 import { ApiTags } from '@nestjs/swagger';
 import { IsIn, IsInt, IsOptional, IsString, Max, Min } from 'class-validator';
 import { Type } from 'class-transformer';
 
 import { ApiException } from '@common/errors/api-exception';
 import { ErrorCode } from '@common/errors/error-code';
+import { ApiSessionAuth } from '@infrastructure/openapi/api-session-auth.decorator';
 import { RequirePermissions } from '@modules/authorization/authorization.decorators';
 import { MetricsService } from '@modules/metrics/metrics.service';
 import {
@@ -41,6 +36,7 @@ class UsageSnapshotQueryDto {
 }
 
 @ApiTags('Admin')
+@ApiSessionAuth()
 @Controller({ path: 'admin/usage', version: '1' })
 @RequirePermissions('admin:metrics:read')
 export class AdminUsageController {

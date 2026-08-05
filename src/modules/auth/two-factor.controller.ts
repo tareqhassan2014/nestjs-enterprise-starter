@@ -1,7 +1,9 @@
 import { Body, Controller, Get, Inject, Post, Req, Res } from '@nestjs/common';
+import { ApiTags } from '@nestjs/swagger';
 import { fromNodeHeaders } from 'better-auth/node';
 import type { Request, Response } from 'express';
 
+import { ApiSessionAuth } from '@infrastructure/openapi/api-session-auth.decorator';
 import { StrictThrottle } from '@modules/throttling/throttle.decorators';
 
 import { CurrentUser } from './auth.decorators';
@@ -24,6 +26,8 @@ interface TwoFactorStatus {
  * standard envelope. Enrolment and verification themselves delegate to the
  * plugin — the cryptography is not ours to reimplement.
  */
+@ApiTags('Account')
+@ApiSessionAuth()
 @StrictThrottle()
 @Controller({ path: 'account/two-factor', version: '1' })
 export class TwoFactorController {

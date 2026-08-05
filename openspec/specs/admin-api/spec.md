@@ -47,6 +47,8 @@ The system SHALL publish OpenAPI documentation that tags administrative routes d
 
 The documentation MUST state that the mounted authentication library surface, health probes, and the metrics scrape path are outside the Nest success-envelope contract.
 
+Detailed Nest security schemes (session cookie, session bearer, API-key bearer) and per-operation security declarations are owned by the `openapi-contract` capability. This requirement owns Admin versus public tagging and the non-envelope boundary description only.
+
 #### Scenario: Admin routes carry the Admin tag
 
 - **WHEN** the generated OpenAPI document is inspected
@@ -61,3 +63,8 @@ The documentation MUST state that the mounted authentication library surface, he
 
 - **WHEN** Swagger/OpenAPI UI exposure is disabled via validated configuration
 - **THEN** the interactive docs endpoint is not served
+
+#### Scenario: Security schemes are not required solely by this capability
+
+- **WHEN** the OpenAPI document is validated against admin-api requirements
+- **THEN** satisfaction of Admin tagging and boundary description does not depend on re-specifying the full security-scheme catalogue here

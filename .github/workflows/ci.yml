@@ -11,8 +11,13 @@ concurrency:
 
 jobs:
   verify:
-    name: Lint, typecheck, test, build
+    name: Lint, typecheck, test, build (Node ${{ matrix.node-version }})
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # 22 = engines floor / LTS; 24 = current major at or above the floor
+        node-version: [22, 24]
 
     # Integration and e2e tests run against real engines, not mocks.
     services:
@@ -52,7 +57,7 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: ${{ matrix.node-version }}
           cache: pnpm
 
       # --frozen-lockfile: a lockfile drift is a failure, not a silent resolve.
@@ -95,5 +100,7 @@ jobs:
       - name: Boot smoke test
         run: pnpm test:smoke
 
+      # Image build once on the primary matrix cell to avoid doubling build time.
       - name: Build production image
+        if: matrix.node-version == 22
         run: docker build --target runner -t nestjs-enterprise-starter:ci .

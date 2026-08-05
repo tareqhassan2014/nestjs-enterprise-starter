@@ -4,6 +4,25 @@ An opinionated NestJS 11 starter with the cross-cutting substrate already built:
 
 Fork it and build features on top — the parts every service needs are decided and wired.
 
+## 5-minute first run
+
+On a machine with Node 22.12+, pnpm 11+, and Docker:
+
+```bash
+cp .env.example .env
+pnpm install
+pnpm docker:up          # or: make up — app + Postgres + Redis + Mailpit
+pnpm db:migrate:deploy  # or: make migrate
+pnpm db:seed            # or: make seed — required before authz-heavy flows
+curl -s http://localhost:3000/health/ready
+```
+
+You should get a Terminus readiness payload (Postgres + Redis healthy). Compose overrides the production image’s secret and mail transport so the placeholder `.env` still boots in containers.
+
+**Seed is not optional** for authorization: the permission catalogue and baseline `user` / `admin` roles come from it.
+
+**Next:** [Configure Google, Apple, Stripe, and Redis](#google-apple-stripe-redis) in `.env.example` / `.env`. OpenAPI UI (when enabled): <http://localhost:3000/docs>. Verification emails: Mailpit at <http://localhost:8025>.
+
 ## What's in the box
 
 | Concern | Implementation |
@@ -44,27 +63,11 @@ Not included by design: Stripe **Subscription** Billing sync (plans stay app-own
 - pnpm 11+ (`corepack enable`)
 - Docker (for Postgres and Redis)
 
-## Quick start
+## Local stack details
 
-```bash
-cp .env.example .env
-pnpm install
-pnpm docker:up          # app + Postgres + Redis + Mailpit
-pnpm db:migrate:deploy  # apply migrations
-pnpm db:seed            # permission catalogue + baseline roles + plans
-```
+The [5-minute first run](#5-minute-first-run) is enough to get healthy. Notes below cover host ports, running the app outside Docker, and hot reload.
 
-Then:
-
-```bash
-curl http://localhost:3000/health/ready
-```
-
-Seeding is not optional if you intend to use authorization: the permission catalogue and the baseline `user`/`admin` roles come from it.
-
-Verification and reset emails sent by the Compose stack are readable in Mailpit at <http://localhost:8025>.
-
-Note that the `app` service runs the production image with `NODE_ENV=production`, so boot validation refuses the `.env.example` placeholder secret and the non-delivering `log` mail transport. `compose.yaml` therefore supplies a local-only secret and points mail at Mailpit. Replace that secret anywhere real:
+Compose supplies a local-only secret and points mail at Mailpit because the `app` service runs `NODE_ENV=production`. Replace that secret anywhere real:
 
 ```bash
 openssl rand -base64 32
@@ -104,25 +107,50 @@ pnpm docker:up:dev
 
 Mounts `src/` into the container and runs `start:dev`.
 
-## Scripts
+## Scripts and Make targets
 
-| Script | Purpose |
+`package.json` scripts are the source of truth. The root `Makefile` wraps the common ones (`make help` lists them).
+
+| Script / Make | Purpose |
 | --- | --- |
 | `pnpm start:dev` | Watch mode |
-| `pnpm build` | Compile to `dist/` (SWC, with typecheck) |
-| `pnpm typecheck` | `tsc --noEmit` across src, tests, and scripts |
-| `pnpm lint` / `lint:ci` | ESLint, with and without `--fix` |
-| `pnpm test` | Unit tests |
-| `pnpm test:e2e` | End-to-end and integration tests (needs Postgres + Redis) |
-| `pnpm test:smoke` | Boots `dist/main`, checks liveness, asserts clean SIGTERM exit |
+| `pnpm build` / `make build` | Compile to `dist/` (SWC, with typecheck) |
+| `pnpm typecheck` / `make typecheck` | `tsc --noEmit` across src, tests, and scripts |
+| `pnpm lint` / `lint:ci` / `make lint` | ESLint, with and without `--fix` |
+| `pnpm test` / `make test` | Unit tests |
+| `pnpm test:e2e` / `make test-e2e` | End-to-end and integration tests (needs Postgres + Redis) |
+| `pnpm test:smoke` / `make test-smoke` | Boots `dist/main`, checks liveness, asserts clean SIGTERM exit |
 | `pnpm check:env` | Fails if `.env.example` and the env schema have drifted |
 | `pnpm db:generate` | Generate the Prisma client |
 | `pnpm db:migrate` | Create and apply a migration (development) |
-| `pnpm db:migrate:deploy` | Apply pending migrations (CI, production) |
-| `pnpm db:seed` | Run the idempotent seed |
+| `pnpm db:migrate:deploy` / `make migrate` | Apply pending migrations (CI, production) |
+| `pnpm db:seed` / `make seed` | Run the idempotent seed |
 | `pnpm db:reset` | Drop, re-migrate, and re-seed |
 | `pnpm db:studio` | Prisma Studio |
-| `pnpm docker:up` / `:dev` / `docker:down` | Compose stack |
+| `pnpm docker:up` / `:dev` / `docker:down` / `make up` `down` `logs` | Compose stack |
+| `make image` | Build the production Docker image (`runner` stage) |
+| `make ci-local` | Best-effort local mirror of CI gates |
+
+### Git hooks (Husky)
+
+`pnpm install` runs `prepare` → Husky. Hooks:
+
+- **pre-commit** — `lint-staged` runs ESLint `--fix` on staged `src/`, `test/`, and `scripts/` TypeScript
+- **commit-msg** — Conventional Commits via commitlint (`feat:`, `fix:`, `docs:`, …)
+
+Emergency bypass only: `HUSKY=0 git commit …` or `git commit --no-verify`. CI still runs lint, typecheck, tests, and the image build.
+
+### Google, Apple, Stripe, Redis
+
+One sample file: [`.env.example`](.env.example). Annotated sections:
+
+| Integration | Where in `.env.example` |
+| --- | --- |
+| **Redis** | `REDIS_URL` (near the top, with Postgres) |
+| **Google / Apple OAuth** | `GOOGLE_CLIENT_*` / `APPLE_CLIENT_*` under Authentication |
+| **Stripe top-up** | `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`, `STRIPE_CREDIT_PACKS` under Credits & Stripe |
+
+Copy to `.env` and fill the groups you need. Each OAuth/Stripe group is all-or-nothing at boot; Redis is required for the stack to be ready.
 
 ## Layout
 
@@ -469,7 +497,7 @@ Baseline `admin` receives every permission; `user` does not. After seeding new k
 
 **Metrics:** `GET /metrics` is Prometheus text, outside `/api` and outside the success envelope (like health). Enable with `METRICS_ENABLED=true`. Set `METRICS_BEARER_TOKEN` for scrape auth, or isolate the path on the network when the token is blank. Label cardinality stays low — route templates, never user ids.
 
-**OpenAPI:** Swagger UI at `/docs` when `SWAGGER_ENABLED` is true (defaults on in development). Admin controllers are tagged `Admin`. Documented envelope exceptions: `/api/auth/*`, `/health/*`, `/metrics`, Stripe webhook.
+**OpenAPI:** Swagger UI at `/docs` when `SWAGGER_ENABLED` is true (defaults on in development). Security schemes: `session_token` (cookie), `session_bearer` (Better Auth session), `api_key` (agent keys for `/mcp`). Admin controllers are tagged `Admin`. Documented envelope exceptions: `/api/auth/*`, `/health/*`, `/metrics`, Stripe webhook, MCP.
 
 **Not included:** admin SPA, Grafana/Alertmanager, session impersonation, or Stripe Billing sync from admin actions (ledger adjust is product-side only).
 
@@ -627,7 +655,7 @@ Alpine is safe here because Prisma 7 ships a WASM query compiler with no native 
 
 ## CI
 
-`.github/workflows/ci.yml` runs on push and pull request with Postgres and Redis service containers: install (frozen lockfile) → generate → env drift check → lint → typecheck → unit tests → migrate → **seed** → e2e → build → boot smoke test → image build. Cheap gates run first.
+`.github/workflows/ci.yml` runs on push and pull request across a **Node 22 + 24** matrix with Postgres and Redis service containers: install (frozen lockfile) → generate → env drift check → lint → typecheck → unit tests → migrate → **seed** → e2e → build → boot smoke test → production image build (Node 22 cell only). Cheap gates run first. A failing matrix cell fails the workflow.
 
 The boot smoke test exists because path aliases are declared in `tsconfig.json` and mirrored in `.swcrc`; a drift between them passes lint, typecheck, and every test, and fails only when the built output actually runs.
 

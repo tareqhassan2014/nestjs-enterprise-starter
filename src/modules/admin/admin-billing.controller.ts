@@ -24,13 +24,14 @@ import { RequestContext } from '@common/context/request-context';
 import { ApiException } from '@common/errors/api-exception';
 import { ErrorCode } from '@common/errors/error-code';
 import { Idempotent } from '@common/idempotency/idempotent.decorator';
+import { ApiSessionAuth } from '@infrastructure/openapi/api-session-auth.decorator';
+import { PrismaService } from '@infrastructure/prisma/prisma.service';
 import { CurrentUser } from '@modules/auth/auth.decorators';
 import type { AuthenticatedPrincipal } from '@modules/auth/auth.service';
 import { RequirePermissions } from '@modules/authorization/authorization.decorators';
 import { CreditService } from '@modules/credits/credit.service';
 import { PlanResolutionService } from '@modules/plans/plan-resolution.service';
 import { StrictThrottle } from '@modules/throttling/throttle.decorators';
-import { PrismaService } from '@infrastructure/prisma/prisma.service';
 
 import { AUDIT_ACTIONS, AuditLogService } from './audit-log.service';
 
@@ -73,6 +74,7 @@ class CreditAdjustDto {
 }
 
 @ApiTags('Admin')
+@ApiSessionAuth()
 @Controller({ path: 'admin/users', version: '1' })
 export class AdminBillingController {
   constructor(

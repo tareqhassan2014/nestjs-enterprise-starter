@@ -12,6 +12,7 @@ import { ApiTags } from '@nestjs/swagger';
 import { fromNodeHeaders } from 'better-auth/node';
 import type { Request, Response } from 'express';
 
+import { ApiSessionAuth } from '@infrastructure/openapi/api-session-auth.decorator';
 import { PermissionResolver } from '@modules/authorization/permission-resolver.service';
 import { StrictThrottle } from '@modules/throttling/throttle.decorators';
 
@@ -52,6 +53,7 @@ interface SessionView {
  * `/api/auth/*` remain Better Auth's responsibility.
  */
 @ApiTags('Account')
+@ApiSessionAuth()
 @StrictThrottle()
 @Controller({ path: 'account', version: '1' })
 export class AccountController {

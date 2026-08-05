@@ -9,7 +9,7 @@ import {
   VERSION_NEUTRAL,
 } from '@nestjs/common';
 import type { ConfigType } from '@nestjs/config';
-import { ApiExcludeController } from '@nestjs/swagger';
+import { ApiBearerAuth, ApiExcludeController, ApiTags } from '@nestjs/swagger';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { SkipThrottle } from '@nestjs/throttler';
 import type { Request, Response } from 'express';
@@ -17,6 +17,7 @@ import type { Request, Response } from 'express';
 import { NoEnvelope } from '@common/decorators/no-envelope.decorator';
 import { RequestContext } from '@common/context/request-context';
 import { mcpConfig } from '@config/mcp.config';
+import { OPENAPI_API_KEY } from '@infrastructure/openapi/openapi.document';
 import { ApiKeyService } from '@modules/api-keys/api-key.service';
 import { Public } from '@modules/auth/auth.decorators';
 
@@ -28,7 +29,13 @@ import { McpServerFactory } from './mcp-server.factory';
  * Outside `/api`, outside the success envelope. Auth is Bearer API key only
  * (Better Auth sessions are not accepted here). Nest throttling is skipped;
  * MCP-specific Redis ceilings run inside AgentPipeline.
+ *
+ * Excluded from OpenAPI path items (Streamable HTTP is not an enveloped Nest
+ * JSON API); `api_key` is still declared as a document security scheme and
+ * referenced here for tooling that inspects controller metadata.
  */
+@ApiTags('MCP')
+@ApiBearerAuth(OPENAPI_API_KEY)
 @ApiExcludeController()
 @Public()
 @SkipThrottle({ burst: true, minute: true })
