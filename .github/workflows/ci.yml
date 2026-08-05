@@ -77,19 +77,36 @@ jobs:
       - name: Typecheck
         run: pnpm typecheck
 
+      # The test steps run on Node 24+ only, and the constraint is Jest's, not
+      # this project's. `better-auth` is ESM-only while our tests compile to
+      # CommonJS, and Jest's module registry intercepts the require before
+      # Node's own `require(esm)` can bridge it — so Jest supplies the bridge
+      # itself, which needs the synchronous vm module APIs added in Node 24.9.
+      # On 22 the auth suites fail to load with "Jest's require(ESM) requires
+      # Node v24.9+". `--experimental-vm-modules` is still required (see
+      # jest.config.ts) but is not sufficient there.
+      #
+      # This does not weaken the engines floor. Node's unflagged `require(esm)`
+      # from 22.12 is what `engines.node` claims, and every cell still exercises
+      # it for real through Build + Boot smoke test below.
       - name: Unit tests
+        if: matrix.node-version >= 24
         run: pnpm test
 
+      # Migrating and seeding only serve the e2e step, so they follow its gate.
       - name: Apply migrations
+        if: matrix.node-version >= 24
         run: pnpm db:migrate:deploy
 
       # The access-control suites assert on the seeded permission catalogue and
       # baseline roles, so seeding is a prerequisite for e2e rather than an
       # optional convenience.
       - name: Seed baseline roles and permissions
+        if: matrix.node-version >= 24
         run: pnpm db:seed
 
       - name: End-to-end and integration tests
+        if: matrix.node-version >= 24
         run: pnpm test:e2e
 
       - name: Build
@@ -101,6 +118,8 @@ jobs:
         run: pnpm test:smoke
 
       # Image build once on the primary matrix cell to avoid doubling build time.
+      # That cell is the one running the full gate set, so the image is only
+      # built off a tree whose tests passed.
       - name: Build production image
-        if: matrix.node-version == 22
+        if: matrix.node-version == 24
         run: docker build --target runner -t nestjs-enterprise-starter:ci .

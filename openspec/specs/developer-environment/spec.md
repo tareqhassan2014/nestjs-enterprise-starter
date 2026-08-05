@@ -76,12 +76,14 @@ Path aliases SHALL be declared once in the TypeScript configuration and resolve 
 
 Continuous integration SHALL run on every push and pull request, executing lint, typecheck, unit tests, end-to-end tests, build, and a boot smoke test of the compiled artifact across the Node version matrix. Any failing gate MUST fail the pipeline.
 
+A gate MAY be restricted to a subset of matrix cells only where a test-tooling limitation — not an application limitation — makes it unrunnable elsewhere. Each such restriction MUST be documented at the step with the limitation and the Node version that lifts it, and every gate the restriction skips MUST still run on at least one cell.
+
 Tests requiring PostgreSQL or Redis MUST run against real service containers, not mocks. Dependencies MUST be installed from the committed lockfile without modifying it. The production container image MUST be built at least once per workflow as specified by the production image build requirement.
 
 #### Scenario: Pull request opened
 
 - **WHEN** a pull request is opened
-- **THEN** the pipeline runs every gate on each matrix Node version and reports its result on the pull request
+- **THEN** the pipeline runs every gate on each matrix Node version — except gates documented as restricted by a test-tooling limitation — and reports its result on the pull request
 
 #### Scenario: Lint failure
 
@@ -154,12 +156,17 @@ Continuous integration SHALL execute the verify pipeline on more than one Node.j
 #### Scenario: Pull request runs multiple Node versions
 
 - **WHEN** a pull request is opened
-- **THEN** the CI workflow runs lint, typecheck, and tests on each matrix Node version
+- **THEN** the CI workflow runs lint, typecheck, build, and the boot smoke test on each matrix Node version, and the test suites on every cell able to run them
 
 #### Scenario: Engines floor is included
 
 - **WHEN** the CI matrix is inspected
 - **THEN** it includes a Node 22.x job satisfying `engines.node` `>=22.12`
+
+#### Scenario: Engines floor proves `require(esm)` works
+
+- **WHEN** the floor cell cannot run a suite because the test runner, not the application, requires a newer Node
+- **THEN** that cell still builds and boots the compiled artifact, exercising Node's unflagged `require(esm)` for the ESM-only auth dependency
 
 ### Requirement: Production image build remains a CI gate
 
