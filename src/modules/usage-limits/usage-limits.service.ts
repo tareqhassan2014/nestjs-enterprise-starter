@@ -1,4 +1,10 @@
-import { HttpStatus, Inject, Injectable, Logger, Optional } from '@nestjs/common';
+import {
+  HttpStatus,
+  Inject,
+  Injectable,
+  Logger,
+  Optional,
+} from '@nestjs/common';
 import type { ConfigType } from '@nestjs/config';
 import type { Redis } from 'ioredis';
 
@@ -8,7 +14,11 @@ import { usageLimitsConfig } from '@config/usage-limits.config';
 import { REDIS_CLIENT } from '@infrastructure/redis/redis.constants';
 import { PlanResolutionService } from '@modules/plans/plan-resolution.service';
 
-import { assertUsageFeature, type UsageFeature, USAGE_FEATURE_LIST } from './usage-features';
+import {
+  assertUsageFeature,
+  type UsageFeature,
+  USAGE_FEATURE_LIST,
+} from './usage-features';
 
 export type UsagePeriod = 'day' | 'week';
 

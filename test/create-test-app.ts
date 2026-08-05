@@ -11,7 +11,9 @@ import { APP_OPTIONS, configureApp } from '@/bootstrap';
 export async function createTestApp(
   customise?: (builder: TestingModuleBuilder) => TestingModuleBuilder,
   extraImports: unknown[] = [],
-  options?: { logger?: false | ('error' | 'warn' | 'log' | 'debug' | 'verbose')[] },
+  options?: {
+    logger?: false | ('error' | 'warn' | 'log' | 'debug' | 'verbose')[];
+  },
 ): Promise<NestExpressApplication> {
   let builder = Test.createTestingModule({
     imports: [AppModule, ...(extraImports as [])],

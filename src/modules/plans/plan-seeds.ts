@@ -20,10 +20,7 @@ export interface PlanSeedDefinition {
    * act as a practical "unlimited" sentinel (null is avoided so remaining maths
    * stay simple).
    */
-  usageLimits: Record<
-    string,
-    { dailyLimit: number; weeklyLimit: number }
-  >;
+  usageLimits: Record<string, { dailyLimit: number; weeklyLimit: number }>;
 }
 
 /**

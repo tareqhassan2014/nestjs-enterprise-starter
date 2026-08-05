@@ -65,9 +65,10 @@ export class EntitlementsGuard implements CanActivate {
         [context.getHandler(), context.getClass()],
       ) ?? [];
 
-    const requiredPlan = this.reflector.getAllAndOverride<
-      PlanSlug | undefined
-    >(REQUIRED_PLAN_KEY, [context.getHandler(), context.getClass()]);
+    const requiredPlan = this.reflector.getAllAndOverride<PlanSlug | undefined>(
+      REQUIRED_PLAN_KEY,
+      [context.getHandler(), context.getClass()],
+    );
 
     if (requiredEntitlements.length === 0 && !requiredPlan) {
       return true;

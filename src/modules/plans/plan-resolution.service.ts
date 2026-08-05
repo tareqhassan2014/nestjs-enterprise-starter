@@ -28,7 +28,12 @@ export interface PlanUsageCeilings {
 
 export interface EffectivePlan {
   planId: string;
-  slug: PlanSlug | string;
+  /**
+   * A seeded `PLAN_SLUGS` value, or a custom slug added to the `Plan` table.
+   * `string & {}` keeps the seeded slugs in editor autocomplete instead of
+   * letting the wider `string` swallow the union.
+   */
+  slug: PlanSlug | (string & {});
   name: string;
   rank: number;
   /** True when an entitled subscription row is in force (not Lite fallback). */

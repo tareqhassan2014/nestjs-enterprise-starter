@@ -393,7 +393,11 @@ const envObjectSchema = z.object({
   BULLMQ_PREFIX: z.string().min(1).default('bull'),
   BULLMQ_EMAIL_CONCURRENCY: z.coerce.number().int().positive().default(5),
   BULLMQ_WEBHOOK_CONCURRENCY: z.coerce.number().int().positive().default(5),
-  BULLMQ_USAGE_ROLLUP_CONCURRENCY: z.coerce.number().int().positive().default(1),
+  BULLMQ_USAGE_ROLLUP_CONCURRENCY: z.coerce
+    .number()
+    .int()
+    .positive()
+    .default(1),
   BULLMQ_DEFAULT_ATTEMPTS: z.coerce.number().int().positive().default(5),
   BULLMQ_BACKOFF_MS: z.coerce.number().int().positive().default(2000),
   /** When true, low-balance events enqueue email instead of only emitting. */

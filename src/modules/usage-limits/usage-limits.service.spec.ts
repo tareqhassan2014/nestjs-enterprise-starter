@@ -117,11 +117,8 @@ describe('UsageLimitsService', () => {
       usageCeiling: jest
         .fn()
         .mockImplementation(
-          (
-            _plan: unknown,
-            _feature: string,
-            period: 'day' | 'week',
-          ): number => (period === 'day' ? 7 : 20),
+          (_plan: unknown, _feature: string, period: 'day' | 'week'): number =>
+            period === 'day' ? 7 : 20,
         ),
     };
 

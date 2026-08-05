@@ -96,8 +96,10 @@ function isNotFound(error: unknown): boolean {
 
 async function streamToBuffer(stream: Readable): Promise<Buffer> {
   const chunks: Buffer[] = [];
-  for await (const chunk of stream) {
-    chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+  // `Readable`'s async iterator yields `any`; narrowing it here keeps the
+  // pushes type-checked.
+  for await (const chunk of stream as AsyncIterable<Buffer | string>) {
+    chunks.push(typeof chunk === 'string' ? Buffer.from(chunk) : chunk);
   }
   return Buffer.concat(chunks);
 }

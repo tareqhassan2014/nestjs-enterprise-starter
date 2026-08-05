@@ -18,6 +18,5 @@ export const RequireEntitlement = (
  * Requires the caller's effective plan rank to be at least that of `slug`
  * (Lite < Pro < Enterprise).
  */
-export const RequirePlan = (
-  slug: PlanSlug,
-): MethodDecorator & ClassDecorator => SetMetadata(REQUIRED_PLAN_KEY, slug);
+export const RequirePlan = (slug: PlanSlug): MethodDecorator & ClassDecorator =>
+  SetMetadata(REQUIRED_PLAN_KEY, slug);

@@ -48,9 +48,9 @@ const tightPlans: Pick<
   PlanResolutionService,
   'resolve' | 'usageCeiling' | 'reloadMatrices' | 'onModuleInit'
 > = {
-  onModuleInit: async () => undefined,
-  reloadMatrices: async () => undefined,
-  resolve: async () => tightPlan,
+  onModuleInit: () => Promise.resolve(),
+  reloadMatrices: () => Promise.resolve(),
+  resolve: () => Promise.resolve(tightPlan),
   usageCeiling: (_plan, _feature, period) =>
     period === 'day' ? DAILY : WEEKLY,
 };

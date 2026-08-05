@@ -102,9 +102,9 @@ describe('Plans and subscriptions (integration)', () => {
       expect(response.body.data.plan.slug).toBe(PLAN_SLUGS.LITE);
       expect(response.body.data.fromSubscription).toBe(false);
       expect(response.body.data.subscription).toBeNull();
-      expect(response.body.data.entitlements[ENTITLEMENTS.FEATURE_ADVANCED]).toBe(
-        false,
-      );
+      expect(
+        response.body.data.entitlements[ENTITLEMENTS.FEATURE_ADVANCED],
+      ).toBe(false);
       expect(response.body.data.limits.demo.daily).toBe(100);
     });
 
@@ -120,9 +120,9 @@ describe('Plans and subscriptions (integration)', () => {
       expect(response.body.data.plan.slug).toBe(PLAN_SLUGS.PRO);
       expect(response.body.data.fromSubscription).toBe(true);
       expect(response.body.data.subscription.status).toBe('active');
-      expect(response.body.data.entitlements[ENTITLEMENTS.FEATURE_ADVANCED]).toBe(
-        true,
-      );
+      expect(
+        response.body.data.entitlements[ENTITLEMENTS.FEATURE_ADVANCED],
+      ).toBe(true);
       expect(response.body.data.limits.demo.daily).toBe(1_000);
     });
   });

@@ -84,9 +84,7 @@ export class MetricsService {
     this.http429.inc({ code });
   }
 
-  recordCreditMutation(
-    type: 'grant' | 'spend' | 'refund' | 'adjust',
-  ): void {
+  recordCreditMutation(type: 'grant' | 'spend' | 'refund' | 'adjust'): void {
     this.creditMutations.inc({ type });
   }
 

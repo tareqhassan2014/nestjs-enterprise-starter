@@ -93,7 +93,7 @@ function parseZset(rows: string[]): Array<{ subject: string; count: number }> {
   const out: Array<{ subject: string; count: number }> = [];
   for (let i = 0; i < rows.length; i += 2) {
     out.push({
-      subject: rows[i]!,
+      subject: rows[i],
       count: Number(rows[i + 1] ?? 0),
     });
   }

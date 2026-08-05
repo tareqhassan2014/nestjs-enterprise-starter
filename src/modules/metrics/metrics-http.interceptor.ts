@@ -7,7 +7,11 @@ import {
 import type { Request, Response } from 'express';
 import { Observable, tap } from 'rxjs';
 
-import { isHealthPath, requestPath } from '@common/http/health-routes';
+import {
+  isHealthPath,
+  matchedRoutePath,
+  requestPath,
+} from '@common/http/health-routes';
 import { isMcpPath } from '@common/http/mcp-routes';
 import { isMetricsPath } from '@common/http/metrics-routes';
 
@@ -66,9 +70,7 @@ function resolveRouteTemplate(
   context: ExecutionContext,
   request: Request,
 ): string {
-  const nestPath = (
-    request as Request & { route?: { path?: string } }
-  ).route?.path;
+  const nestPath = matchedRoutePath(request);
   if (typeof nestPath === 'string' && nestPath.length > 0) {
     const globalPrefix = 'api';
     // Nest route.path is relative to the controller; prefer originalUrl stripped of query + ids is hard —

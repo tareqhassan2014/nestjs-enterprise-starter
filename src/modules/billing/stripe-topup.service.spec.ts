@@ -109,12 +109,14 @@ describe('StripeTopupService', () => {
     const processed = new Map<string, boolean>();
     const prisma = {
       stripeProcessedEvent: {
-        findUnique: jest.fn(async ({ where }: { where: { eventId: string } }) =>
-          processed.has(where.eventId) ? { eventId: where.eventId } : null,
+        findUnique: jest.fn(({ where }: { where: { eventId: string } }) =>
+          Promise.resolve(
+            processed.has(where.eventId) ? { eventId: where.eventId } : null,
+          ),
         ),
-        create: jest.fn(async ({ data }: { data: { eventId: string } }) => {
+        create: jest.fn(({ data }: { data: { eventId: string } }) => {
           processed.set(data.eventId, true);
-          return data;
+          return Promise.resolve(data);
         }),
       },
     } as unknown as PrismaService;
@@ -137,12 +139,7 @@ describe('StripeTopupService', () => {
       },
     } as unknown as Stripe;
 
-    const service = new StripeTopupService(
-      prisma,
-      credits,
-      enabledCfg,
-      stripe,
-    );
+    const service = new StripeTopupService(prisma, credits, enabledCfg, stripe);
 
     await service.handleWebhook(Buffer.from('{}'), 'sig');
     await service.handleWebhook(Buffer.from('{}'), 'sig');

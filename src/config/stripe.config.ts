@@ -11,25 +11,34 @@ import { getEnv } from './env.validation';
  */
 export const STRIPE_API_VERSION = '2026-07-29.dahlia' as const;
 
+export interface StripeCreditPack {
+  slug: string;
+  credits: number;
+  priceId: string;
+}
+
 export const stripeConfig = registerAs('stripe', () => {
   const env = getEnv();
 
   const enabled = Boolean(
     env.STRIPE_SECRET_KEY &&
-      env.STRIPE_WEBHOOK_SECRET &&
-      env.STRIPE_CREDIT_PACKS,
+    env.STRIPE_WEBHOOK_SECRET &&
+    env.STRIPE_CREDIT_PACKS,
   );
 
   if (!enabled) {
+    // Annotated locals, not `as` assertions: the disabled branch must publish
+    // the same pack types as the enabled one, or callers indexing
+    // `packsBySlug` hit an implicit `any` on the union.
+    const packs: StripeCreditPack[] = [];
+    const packsBySlug: Record<string, StripeCreditPack> = {};
+
     return {
       enabled: false as const,
       secretKey: undefined,
       webhookSecret: undefined,
-      packs: [] as Array<{ slug: string; credits: number; priceId: string }>,
-      packsBySlug: {} as Record<
-        string,
-        { slug: string; credits: number; priceId: string }
-      >,
+      packs,
+      packsBySlug,
       successUrl: undefined,
       cancelUrl: undefined,
       apiVersion: STRIPE_API_VERSION,

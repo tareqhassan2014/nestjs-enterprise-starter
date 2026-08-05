@@ -12,7 +12,11 @@ import type { Request, Response } from 'express';
 
 import { ApiException } from '@common/errors/api-exception';
 import { ErrorCode, errorCodeForStatus } from '@common/errors/error-code';
-import { isHealthPath, requestPath } from '@common/http/health-routes';
+import {
+  isHealthPath,
+  matchedRoutePath,
+  requestPath,
+} from '@common/http/health-routes';
 import { isMcpPath } from '@common/http/mcp-routes';
 import {
   type ErrorEnvelope,
@@ -102,8 +106,7 @@ export class AllExceptionsFilter implements ExceptionFilter {
      * need raw payloads, not the Nest success/error envelope.
      */
     if (
-      (isHealthPath(requestPath(request)) ||
-        isMcpPath(requestPath(request))) &&
+      (isHealthPath(requestPath(request)) || isMcpPath(requestPath(request))) &&
       exception instanceof HttpException
     ) {
       response.status(exception.getStatus()).json(exception.getResponse());
@@ -161,10 +164,7 @@ export class AllExceptionsFilter implements ExceptionFilter {
     const payload: LimitExceededPayload = {
       code: resolved.code,
       subject: principal?.id ?? `ip:${request.ip ?? 'unknown'}`,
-      route:
-        (request as Request & { route?: { path?: string } }).route?.path ??
-        requestPath(request) ??
-        'unknown',
+      route: matchedRoutePath(request) ?? requestPath(request) ?? 'unknown',
     };
 
     this.events?.emit(OBS_LIMIT_EXCEEDED_EVENT, payload);

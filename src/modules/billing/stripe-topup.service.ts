@@ -1,9 +1,4 @@
-import {
-  HttpStatus,
-  Inject,
-  Injectable,
-  Logger,
-} from '@nestjs/common';
+import { HttpStatus, Inject, Injectable, Logger } from '@nestjs/common';
 import type { ConfigType } from '@nestjs/config';
 import Stripe from 'stripe';
 
@@ -128,7 +123,7 @@ export class StripeTopupService {
     }
 
     if (event.type === 'checkout.session.completed') {
-      await this.grantFromCheckout(event.data.object as Stripe.Checkout.Session);
+      await this.grantFromCheckout(event.data.object);
     }
 
     await this.prisma.stripeProcessedEvent.create({
@@ -138,7 +133,9 @@ export class StripeTopupService {
     return { received: true };
   }
 
-  private async grantFromCheckout(session: Stripe.Checkout.Session): Promise<void> {
+  private async grantFromCheckout(
+    session: Stripe.Checkout.Session,
+  ): Promise<void> {
     if (session.payment_status !== 'paid' && session.status !== 'complete') {
       this.logger.warn({
         msg: 'Ignoring unpaid Checkout session',

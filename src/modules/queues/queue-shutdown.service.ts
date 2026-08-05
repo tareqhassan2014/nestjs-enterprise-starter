@@ -76,9 +76,7 @@ export class QueueShutdownService implements OnApplicationShutdown {
 
   private async activeJobCount(queues: Queue[]): Promise<number> {
     const counts = await Promise.all(
-      queues.map((queue) =>
-        queue.getActiveCount().catch(() => 0),
-      ),
+      queues.map((queue) => queue.getActiveCount().catch(() => 0)),
     );
     return counts.reduce((total, count) => total + count, 0);
   }

@@ -15,7 +15,12 @@ const DEFAULT_PAGE_SIZE = 20;
 
 export interface WriteAuditParams {
   actorUserId: string;
-  action: AuditAction | string;
+  /**
+   * A known `AUDIT_ACTIONS` value, or any other dotted action string a fork
+   * adds. `string & {}` keeps the known values in editor autocomplete instead
+   * of letting the wider `string` swallow the union.
+   */
+  action: AuditAction | (string & {});
   targetType?: string;
   targetId?: string;
   summary: string;

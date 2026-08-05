@@ -21,17 +21,23 @@ import {
 } from './auth-helpers';
 import { createTestApp } from './create-test-app';
 
-async function connectMcpClient(baseUrl: string, apiKey: string): Promise<{
+async function connectMcpClient(
+  baseUrl: string,
+  apiKey: string,
+): Promise<{
   client: Client;
   transport: StreamableHTTPClientTransport;
 }> {
-  const transport = new StreamableHTTPClientTransport(new URL(`${baseUrl}/mcp`), {
-    requestInit: {
-      headers: {
-        Authorization: `Bearer ${apiKey}`,
+  const transport = new StreamableHTTPClientTransport(
+    new URL(`${baseUrl}/mcp`),
+    {
+      requestInit: {
+        headers: {
+          Authorization: `Bearer ${apiKey}`,
+        },
       },
     },
-  });
+  );
   const client = new Client({ name: 'e2e-mcp', version: '1.0.0' });
   await client.connect(transport);
   return { client, transport };
@@ -165,9 +171,9 @@ describe('Nest-hosted MCP (integration)', () => {
       expect(balance.isError).toBeFalsy();
 
       const resources = await client.listResources();
-      expect(resources.resources.some((r) => r.uri === 'starter://docs/mcp')).toBe(
-        true,
-      );
+      expect(
+        resources.resources.some((r) => r.uri === 'starter://docs/mcp'),
+      ).toBe(true);
 
       const invocation = await prisma.mcpToolInvocation.findFirst({
         where: { userId: user.userId, toolName: 'account.get_profile' },

@@ -11,8 +11,7 @@ export const observabilityConfig = registerAs('observability', () => {
   return {
     metricsEnabled: env.METRICS_ENABLED,
     metricsBearerToken: env.METRICS_BEARER_TOKEN,
-    swaggerEnabled:
-      env.SWAGGER_ENABLED ?? env.NODE_ENV === 'development',
+    swaggerEnabled: env.SWAGGER_ENABLED ?? env.NODE_ENV === 'development',
     adminUsageTopN: env.ADMIN_USAGE_TOP_N,
   };
 });

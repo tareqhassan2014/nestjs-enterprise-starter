@@ -61,7 +61,8 @@ export const PERMISSION_DESCRIPTIONS: Record<Permission, string> = {
   'role:manage': 'Create, edit, and delete roles and their permission mappings',
   'admin:metrics:read': 'Read operational metrics and usage dashboards',
   'admin:audit:read': 'Read admin audit records',
-  'admin:subscriptions:read': "Read another user's subscription and effective plan",
+  'admin:subscriptions:read':
+    "Read another user's subscription and effective plan",
   'admin:credits:read': "Read another user's credit wallet and ledger",
   'admin:credits:adjust': 'Grant or adjust credits for another user',
   'api-keys:manage': 'Create, list, and revoke your own agent API keys',

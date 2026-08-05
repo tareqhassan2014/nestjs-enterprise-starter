@@ -28,11 +28,10 @@ describe('BillingSubjectResolver', () => {
     };
 
     const featureFlags = {
-      isEnabled: jest.fn(
-        (key: string) =>
-          Promise.resolve(
-            key === FEATURE_FLAGS.ORG_BILLING ? orgBillingEnabled : false,
-          ),
+      isEnabled: jest.fn((key: string) =>
+        Promise.resolve(
+          key === FEATURE_FLAGS.ORG_BILLING ? orgBillingEnabled : false,
+        ),
       ),
     };
 

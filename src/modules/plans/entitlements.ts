@@ -11,8 +11,7 @@ export const ENTITLEMENTS = {
   FEATURE_PRIORITY_SUPPORT: 'feature.priority_support',
 } as const;
 
-export type Entitlement =
-  (typeof ENTITLEMENTS)[keyof typeof ENTITLEMENTS];
+export type Entitlement = (typeof ENTITLEMENTS)[keyof typeof ENTITLEMENTS];
 
 export const ENTITLEMENT_LIST = Object.values(ENTITLEMENTS);
 
