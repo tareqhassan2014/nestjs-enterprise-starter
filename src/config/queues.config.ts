@@ -6,6 +6,14 @@ export const QUEUE_NAMES = {
   EMAIL: 'email',
   WEBHOOKS_OUTBOUND: 'webhooks.outbound',
   USAGE_ROLLUPS: 'usage.rollups',
+  /**
+   * Retry path for a compensating credit refund whose inline attempt failed.
+   *
+   * Its own queue rather than reusing `webhooks.outbound`: that one is an outbound
+   * delivery primitive, and overloading it would hide a money-correcting job
+   * behind an unrelated name in the dashboard.
+   */
+  CREDIT_COMPENSATIONS: 'credits.compensations',
 } as const;
 
 export const queuesConfig = registerAs('queues', () => {

@@ -1,66 +1,4 @@
-# Credits
-
-## Purpose
-
-Pay-as-you-go credit wallet and immutable ledger, owned by a user or (when a request carries an org-primary billing subject) an organization, with a Nest gate after usage limits so annotated routes can debit catalogue costs before handlers run.
-
-## Requirements
-
-### Requirement: Per-user wallet with immutable ledger
-
-The system SHALL maintain credit wallets whose balance is updated only together with an append-only ledger entry. Each wallet MUST be owned by exactly one billing owner: a user or an organization. Ledger entries MUST record type (`grant`, `spend`, `refund`, or `adjust`), a positive amount, `balanceAfter`, an optional feature identifier, a unique `idempotencyKey`, and the same owner as the wallet.
-
-Balance MUST never go negative as a result of a successful spend. Wallets MAY be created lazily on the first credit mutation for that owner.
-
-#### Scenario: Grant increases balance and appends ledger
-
-- **WHEN** credits are granted to a user with a new idempotency key
-- **THEN** the wallet balance increases by the granted amount and a `grant` ledger entry exists with matching `balanceAfter`
-
-#### Scenario: Spend decreases balance and appends ledger
-
-- **WHEN** a spend succeeds for a user with sufficient balance
-- **THEN** the wallet balance decreases by the spend amount and a `spend` ledger entry exists with matching `balanceAfter`
-
-#### Scenario: Insufficient balance rejects spend
-
-- **WHEN** a spend is attempted for more credits than the wallet holds
-- **THEN** no ledger entry is written, the balance is unchanged, and the operation fails with insufficient-credits semantics
-
-#### Scenario: Ledger entries are not updated in place
-
-- **WHEN** a prior ledger entry is inspected after later mutations
-- **THEN** its type, amount, and `balanceAfter` remain exactly as originally written
-
-#### Scenario: Organization owner wallet
-
-- **WHEN** credits are granted to an organization owner with a new idempotency key
-- **THEN** the organization wallet balance increases and the ledger entry references that organization owner
-
-### Requirement: Org-scoped wallets via billing subject
-
-The system SHALL support credit wallets owned by either a user or an organization, with exactly one owner kind per wallet. When the billing subject resolver returns an organization subject, grant, spend, refund, adjust, and balance reads MUST operate on that organization's wallet. When the subject is a user, behaviour MUST match the existing per-user wallet rules.
-
-Ledger entries MUST record the same owner as the wallet they affect. Idempotency keys remain unique across the ledger.
-
-#### Scenario: Org spend debits org wallet
-
-- **WHEN** a spend is invoked for an organization billing subject with sufficient org wallet balance
-- **THEN** the organization wallet balance decreases and a `spend` ledger entry is written for that organization owner
-
-#### Scenario: User subject unchanged
-
-- **WHEN** a spend is invoked for a user billing subject
-- **THEN** only that user's wallet is debited and no organization wallet is mutated
-
-### Requirement: Credits gate uses billing subject
-
-The credits gate SHALL resolve the billing subject from the authenticated principal and optional organization context before debiting. It MUST NOT hard-code user-only wallet lookup when an org-primary subject is active.
-
-#### Scenario: Org-primary annotated route
-
-- **WHEN** an entitled member in org-primary context calls a credits-annotated route with sufficient org balance
-- **THEN** the organization wallet is debited and the handler executes
+## MODIFIED Requirements
 
 ### Requirement: Credit mutations are idempotent
 
@@ -94,20 +32,6 @@ Where a stored entry predates the recording of its direction, that entry's direc
 
 - **WHEN** an adjust reuses the key of a stored entry that predates direction being recorded
 - **THEN** the remaining fields are compared and the operation is treated as a replay rather than rejected, so keys written before the guarantee existed keep working
-
-### Requirement: Feature credit costs are declared in code
-
-The system SHALL declare a code-level catalogue mapping feature identifiers to integer credit costs. Route annotations that cost credits MUST only accept identifiers from that catalogue.
-
-#### Scenario: Annotated route uses catalogue cost
-
-- **WHEN** a route is annotated to cost a catalogue feature
-- **THEN** the credits gate uses that feature's declared integer cost
-
-#### Scenario: Catalogue is the vocabulary
-
-- **WHEN** a new billable feature is introduced
-- **THEN** its cost is added to the code catalogue rather than invented as a free-form string in the decorator alone
 
 ### Requirement: Credits gate runs after usage limits
 
@@ -154,29 +78,6 @@ That attempt MUST NOT be the only chance the refund gets. If the inline compensa
 - **WHEN** a durably recorded compensating refund is retried after the inline attempt had in fact succeeded
 - **THEN** the shared idempotency key makes the retry a no-op and the wallet is credited once
 
-### Requirement: Authenticated balance read surface
-
-The system SHALL expose an authenticated, enveloped read of the caller's current credit balance under the versioned API prefix. The response MUST NOT include other users' balances or full cross-user ledger data.
-
-#### Scenario: Caller reads own balance
-
-- **WHEN** an authenticated user requests their credit balance
-- **THEN** the success envelope carries that user's balance
-
-#### Scenario: Unauthenticated balance read is rejected
-
-- **WHEN** an unauthenticated client requests the credit balance endpoint
-- **THEN** the response is `401`
-
-### Requirement: Demo paid endpoint
-
-The starter SHALL ship at least one demonstration route annotated to cost credits so forks can copy the auth → RBAC → entitlements → throttle → usage → credits pattern.
-
-#### Scenario: Demo route charges catalogue cost
-
-- **WHEN** an authenticated entitled user with sufficient balance calls the demo paid endpoint
-- **THEN** the response succeeds and the wallet is debited by the demo feature's catalogue cost
-
 ### Requirement: Low-balance extension point
 
 When a low-balance threshold is configured, the system SHALL emit a structured extension signal (domain event or equivalent) after a mutation that debits the wallet and leaves it at or below that threshold. The credits capability itself MUST NOT send SMTP directly. A separate integration MAY enqueue email via job-queues when feature flags or configuration enable that bridge.
@@ -207,42 +108,3 @@ Any debit SHALL qualify, not only the `spend` type. The signal exists so somebod
 
 - **WHEN** the low-balance email bridge is enabled and a threshold-crossing signal is emitted
 - **THEN** an `email` queue job is enqueued and the spend path does not call SMTP inline
-
-### Requirement: Cross-user credit inspection and adjust are admin concerns
-
-Cross-user credit wallet and ledger inspection, and privileged grant/adjust on behalf of operators, SHALL be provided only through the admin monitoring HTTP surface and MUST require the corresponding admin permissions.
-
-The authenticated self-service balance (and optional self ledger) read MUST remain limited to the caller's own wallet. `CreditService` remains the sole authority for balance mutations; admin routes MUST NOT bypass ledger idempotency or immutability rules.
-
-#### Scenario: Self-service balance stays own-user
-
-- **WHEN** an authenticated non-admin user requests the self-service credit balance endpoint
-- **THEN** the response includes only that user's balance and does not expose another user's wallet
-
-#### Scenario: Admin adjust uses CreditService semantics
-
-- **WHEN** an admin adjust is applied through the admin API
-- **THEN** a ledger entry is written with a unique idempotency key and the wallet balance matches `balanceAfter` on that entry
-
-### Requirement: Credit-gated MCP tools use the existing credit domain
-
-When an MCP tool is declared to cost credits, the MCP pipeline MUST debit the caller’s wallet through the existing credit domain service using the code-declared feature catalogue and integer costs — the same vocabulary as HTTP credit-gated routes.
-
-Spends MUST be idempotent when the MCP request supplies a stable request identifier (or an equivalent derived idempotency key). Insufficient balance MUST deny the tool before the adapter runs, with MCP-level error semantics corresponding to insufficient credits.
-
-Tools without a credit declaration MUST NOT debit the wallet.
-
-#### Scenario: Annotated tool spends once
-
-- **WHEN** a principal with sufficient balance invokes a credit-gated MCP tool
-- **THEN** the wallet is debited once via the credit service and the adapter runs
-
-#### Scenario: Insufficient balance blocks adapter
-
-- **WHEN** a principal with insufficient balance invokes a credit-gated MCP tool
-- **THEN** no spend is committed and the adapter does not run
-
-#### Scenario: Unannotated tool does not spend
-
-- **WHEN** a principal invokes an MCP tool with no credit declaration
-- **THEN** the credit service is not asked to spend for that invocation

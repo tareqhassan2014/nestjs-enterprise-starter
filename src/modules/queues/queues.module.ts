@@ -5,6 +5,8 @@ import type { ConfigType } from '@nestjs/config';
 import { QUEUE_NAMES, queuesConfig } from '@config/queues.config';
 import { redisConfig } from '@config/redis.config';
 
+import { CreditCompensationProcessor } from './credit-compensation.processor';
+import { CreditCompensationQueueService } from './credit-compensation-queue.service';
 import { EmailProcessor } from './email.processor';
 import { EmailQueueService } from './email-queue.service';
 import { LowBalanceEmailListener } from './low-balance-email.listener';
@@ -15,7 +17,8 @@ import { WebhookProcessor } from './webhook.processor';
 import { WebhookQueueService } from './webhook-queue.service';
 
 /**
- * Named queues for `email`, `webhooks.outbound`, and `usage.rollups` (design
+ * Named queues for `email`, `webhooks.outbound`, `usage.rollups`, and
+ * `credits.compensations` (design
  * .md decision 1), each isolated from throttle/usage/session Redis keys by
  * `BULLMQ_PREFIX`.
  *
@@ -54,18 +57,26 @@ import { WebhookQueueService } from './webhook-queue.service';
       { name: QUEUE_NAMES.EMAIL },
       { name: QUEUE_NAMES.WEBHOOKS_OUTBOUND },
       { name: QUEUE_NAMES.USAGE_ROLLUPS },
+      { name: QUEUE_NAMES.CREDIT_COMPENSATIONS },
     ),
   ],
   providers: [
     EmailProcessor,
     WebhookProcessor,
     UsageRollupProcessor,
+    CreditCompensationProcessor,
     EmailQueueService,
     WebhookQueueService,
     UsageRollupQueueService,
+    CreditCompensationQueueService,
     QueueShutdownService,
     LowBalanceEmailListener,
   ],
-  exports: [EmailQueueService, WebhookQueueService, UsageRollupQueueService],
+  exports: [
+    EmailQueueService,
+    WebhookQueueService,
+    UsageRollupQueueService,
+    CreditCompensationQueueService,
+  ],
 })
 export class QueuesModule {}

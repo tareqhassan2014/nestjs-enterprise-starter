@@ -122,10 +122,34 @@ export class StripeTopupService {
       return { received: true };
     }
 
-    if (event.type === 'checkout.session.completed') {
+    /**
+     * Both events carry a `Checkout.Session` and both mean "this session's money
+     * is (now) settled", so they share one grant path.
+     *
+     * `async_payment_succeeded` is not optional extra credit: with settlement now
+     * enforced in `hasSettled`, a delayed-notification payment grants nothing at
+     * completion, so without this event it would never grant at all — trading
+     * over-granting for silent non-delivery to a customer who has paid. The
+     * canonical `stripe:checkout:{session.id}` key means whichever event arrives
+     * first grants and the other is an idempotent no-op.
+     *
+     * **Operational precondition the code cannot enforce:** the Stripe endpoint
+     * must be subscribed to `checkout.session.async_payment_succeeded`. If it is
+     * not, this path is correct and never runs. See the webhook setup notes in
+     * README.md.
+     */
+    if (
+      event.type === 'checkout.session.completed' ||
+      event.type === 'checkout.session.async_payment_succeeded'
+    ) {
       await this.grantFromCheckout(event.data.object);
     }
 
+    /**
+     * Keyed on `event.id`, so the two deliveries are recorded separately — they
+     * are different events. Converging them on a single grant is the ledger's job
+     * via the canonical key, not this table's.
+     */
     await this.prisma.stripeProcessedEvent.create({
       data: { eventId: event.id, type: event.type },
     });
@@ -133,14 +157,50 @@ export class StripeTopupService {
     return { received: true };
   }
 
+  /**
+   * Whether this session's money has actually settled.
+   *
+   * A positive test on the one field that describes payment, replacing a negative
+   * two-clause condition that could not fire:
+   *
+   *     if (session.payment_status !== 'paid' && session.status !== 'complete')
+   *
+   * The events that reach here carry `status: 'complete'` by definition — that is
+   * what "completed" means — so the second operand was always false, the `&&`
+   * short-circuited, and the early return was unreachable. Every completed
+   * session was credited regardless of payment, including the `unpaid` sessions
+   * that delayed-notification methods produce.
+   *
+   * Note this is not `||` with the operands corrected: reasoning negatively over
+   * two independent facts is what produced the bug, and one positive test on
+   * `payment_status` has no such failure mode. **Do not "simplify" it back.**
+   *
+   * `no_payment_required` grants deliberately. A fully discounted pack (a 100%
+   * coupon) settles nothing and must still deliver — withholding there would be
+   * the same class of bug pointed the other way.
+   */
+  private hasSettled(session: Stripe.Checkout.Session): boolean {
+    return (
+      session.payment_status === 'paid' ||
+      session.payment_status === 'no_payment_required'
+    );
+  }
+
   private async grantFromCheckout(
     session: Stripe.Checkout.Session,
   ): Promise<void> {
-    if (session.payment_status !== 'paid' && session.status !== 'complete') {
+    if (!this.hasSettled(session)) {
+      /**
+       * Not an error: a session may legitimately complete before its payment
+       * settles, and `checkout.session.async_payment_succeeded` grants later.
+       * Logged so "the customer says they paid and has no credits" is
+       * distinguishable from "no event ever arrived".
+       */
       this.logger.warn({
-        msg: 'Ignoring unpaid Checkout session',
+        msg: 'Checkout session has not settled; no credits granted',
         sessionId: session.id,
         paymentStatus: session.payment_status,
+        status: session.status,
       });
       return;
     }

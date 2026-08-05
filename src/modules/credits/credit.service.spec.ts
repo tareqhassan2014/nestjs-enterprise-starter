@@ -217,6 +217,104 @@ describe('CreditService', () => {
     ).rejects.toMatchObject({ code: ErrorCode.CONFLICT });
   });
 
+  /**
+   * Direction, which idempotency validation used to be blind to.
+   *
+   * `adjust` stores `amount: Math.abs(delta)` with `type: 'adjust'`, so `+50` and
+   * `-50` produced identical comparison inputs — and the admin route takes the
+   * idempotency key from the request body, so an operator reusing a ticket id got
+   * the opposite adjustment reported as a successful replay while the balance never
+   * moved.
+   */
+  it('rejects an opposite-direction adjust reusing an idempotency key', async () => {
+    const { service, state } = createService();
+    await service.grant({ userId: 'u1', amount: 100, idempotencyKey: 'g' });
+    await service.adjust({ userId: 'u1', delta: 50, idempotencyKey: 'op-1' });
+
+    expect(state.wallets.get('wallet-1')?.balance).toBe(150);
+
+    await expect(
+      service.adjust({ userId: 'u1', delta: -50, idempotencyKey: 'op-1' }),
+    ).rejects.toMatchObject({ code: ErrorCode.CONFLICT });
+
+    // And the balance is untouched by the rejected call.
+    expect(state.wallets.get('wallet-1')?.balance).toBe(150);
+  });
+
+  it('still treats an identical adjust replay as a no-op success', async () => {
+    const { service, state } = createService();
+    await service.grant({ userId: 'u1', amount: 100, idempotencyKey: 'g' });
+    await service.adjust({ userId: 'u1', delta: -25, idempotencyKey: 'op-2' });
+
+    const replay = await service.adjust({
+      userId: 'u1',
+      delta: -25,
+      idempotencyKey: 'op-2',
+    });
+
+    expect(replay.replayed).toBe(true);
+    expect(state.wallets.get('wallet-1')?.balance).toBe(75);
+    expect(state.ledger.size).toBe(2);
+  });
+
+  /**
+   * Adjust entries written before this change carry no recorded delta, so their
+   * direction cannot be verified. Those must fall back to the previous comparison
+   * rather than reject — refusing every pre-existing adjust key would turn a
+   * hardening change into an outage. A real, bounded coverage gap.
+   */
+  it('falls back rather than rejecting when a legacy adjust has no recorded delta', async () => {
+    const { service, state } = createService();
+    await service.grant({ userId: 'u1', amount: 100, idempotencyKey: 'g' });
+    await service.adjust({ userId: 'u1', delta: 40, idempotencyKey: 'legacy' });
+
+    // Simulate a row written before the signed delta was persisted.
+    const entry = [...state.ledger.values()].find(
+      (row) => row.idempotencyKey === 'legacy',
+    );
+    expect(entry).toBeDefined();
+    entry!.metadata = null;
+
+    const replay = await service.adjust({
+      userId: 'u1',
+      delta: 40,
+      idempotencyKey: 'legacy',
+    });
+
+    expect(replay.replayed).toBe(true);
+    expect(state.wallets.get('wallet-1')?.balance).toBe(140);
+  });
+
+  it('emits low-balance when a negative adjust crosses the threshold', async () => {
+    const { service, events } = createService({ lowBalanceThreshold: 2 });
+    await service.grant({ userId: 'u1', amount: 10, idempotencyKey: 'g' });
+
+    await service.adjust({ userId: 'u1', delta: -9, idempotencyKey: 'a' });
+
+    /**
+     * Previously gated on `type === 'spend'`, so an operator debiting a wallet
+     * below the threshold emitted nothing — the customer was stranded with nobody
+     * warned.
+     */
+    expect(events.emit).toHaveBeenCalledWith(
+      CREDITS_LOW_BALANCE_EVENT,
+      expect.objectContaining({ balance: 1, threshold: 2 }),
+    );
+  });
+
+  it('does not emit low-balance for a credit that leaves a low balance', async () => {
+    const { service, events } = createService({ lowBalanceThreshold: 5 });
+
+    // Ends at 1, below the threshold, but the balance moved upward.
+    await service.grant({ userId: 'u1', amount: 1, idempotencyKey: 'g' });
+    await service.refund({ userId: 'u1', amount: 0 + 1, idempotencyKey: 'r' });
+
+    expect(events.emit).not.toHaveBeenCalledWith(
+      CREDITS_LOW_BALANCE_EVENT,
+      expect.anything(),
+    );
+  });
+
   it('fails spend when balance is insufficient', async () => {
     const { service, state } = createService();
     await service.grant({ userId: 'u1', amount: 1, idempotencyKey: 'g' });

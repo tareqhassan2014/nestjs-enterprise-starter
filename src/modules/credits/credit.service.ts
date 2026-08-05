@@ -21,6 +21,12 @@ import {
 
 export const CREDITS_LOW_BALANCE_EVENT = 'credits.low_balance';
 
+/**
+ * Metadata field carrying an adjust's signed delta, so a replay can tell a credit
+ * from a debit of the same size. See `metadataWithDelta`.
+ */
+const ADJUST_DELTA_KEY = 'adjustDelta';
+
 export interface CreditsLowBalancePayload {
   subject: BillingSubject;
   /**
@@ -230,7 +236,7 @@ export class CreditService {
           balanceAfter: updated.balance,
           feature: params.feature,
           idempotencyKey: params.idempotencyKey,
-          metadata: params.metadata,
+          metadata: this.metadataWithDelta(params),
         },
       });
 
@@ -243,7 +249,7 @@ export class CreditService {
 
     if (
       !result.replayed &&
-      params.type === 'spend' &&
+      params.delta < 0 &&
       this.shouldEmitLowBalance(result.balance)
     ) {
       this.emitLowBalance(params.subject, result.balance);
@@ -252,6 +258,20 @@ export class CreditService {
     return result;
   }
 
+  /**
+   * Whether the resulting balance warrants a low-balance signal.
+   *
+   * The caller tests `delta < 0` rather than `type === 'spend'`, which is what it
+   * used to do. A negative `adjust` strands a customer exactly as a metered spend
+   * would, and which internal operation caused the drop is not what the warning is
+   * about — so any debit qualifies. Expressed as the delta's direction rather than
+   * an enumeration of types, so a mutation type added later is covered by default,
+   * while a `grant` or `refund` that happens to leave a low balance stays silent
+   * because the balance moved upward.
+   *
+   * Consequence worth knowing: the `email` bridge now fires for admin debits too.
+   * That is the intent, but it does widen how often that queue job is produced.
+   */
   private shouldEmitLowBalance(balance: number): boolean {
     const threshold = this.credits.lowBalanceThreshold;
     return threshold !== undefined && balance <= threshold;
@@ -338,11 +358,63 @@ export class CreditService {
     }
   }
 
+  /**
+   * The metadata to store, carrying an adjust's signed delta.
+   *
+   * Only `adjust` needs it. `grant` and `refund` are always credits and `spend` is
+   * always a debit, so for those the direction is implied by `type` and already
+   * compared on replay. `adjust` is the one mutation whose sign is independent of
+   * its type — `amount` is `Math.abs(delta)` — which made `+100` and `-100`
+   * indistinguishable to `assertReplayMatches`.
+   *
+   * Stored in `metadata` rather than a new column because the field already exists
+   * for operation detail and needs no migration, and rather than deriving the sign
+   * from `balanceAfter` because that needs the *previous* balance, which is only
+   * recoverable by walking the ledger and is not stable against interleaved
+   * entries from concurrent mutations.
+   */
+  private metadataWithDelta(params: {
+    type: string;
+    delta: number;
+    metadata?: Prisma.InputJsonValue;
+  }): Prisma.InputJsonValue | undefined {
+    if (params.type !== 'adjust') {
+      return params.metadata;
+    }
+
+    const base =
+      typeof params.metadata === 'object' &&
+      params.metadata !== null &&
+      !Array.isArray(params.metadata)
+        ? params.metadata
+        : {};
+
+    return { ...base, [ADJUST_DELTA_KEY]: params.delta };
+  }
+
+  /** The signed delta recorded on an adjust entry, when it has one. */
+  private storedDelta(entry: CreditLedgerEntry): number | undefined {
+    const metadata = entry.metadata;
+
+    if (
+      typeof metadata !== 'object' ||
+      metadata === null ||
+      Array.isArray(metadata)
+    ) {
+      return undefined;
+    }
+
+    const value = (metadata as Record<string, unknown>)[ADJUST_DELTA_KEY];
+
+    return typeof value === 'number' ? value : undefined;
+  }
+
   private assertReplayMatches(
     existing: CreditLedgerEntry,
     params: {
       type: string;
       amount: number;
+      delta: number;
       subject: BillingSubject;
       feature?: string;
     },
@@ -352,8 +424,23 @@ export class CreditService {
         ? existing.organizationId !== params.subject.organizationId
         : existing.userId !== params.subject.userId;
 
+    /**
+     * Direction, for adjusts that recorded it.
+     *
+     * Entries written before this change carry no stored delta, so their direction
+     * cannot be verified — those fall back to the comparison below rather than
+     * being rejected. Refusing every pre-existing adjust key would turn a
+     * hardening change into an outage. A real, bounded gap: keys already used
+     * before this shipped stay unverifiable for direction.
+     */
+    const recordedDelta =
+      params.type === 'adjust' ? this.storedDelta(existing) : undefined;
+    const directionMismatch =
+      recordedDelta !== undefined && recordedDelta !== params.delta;
+
     if (
       ownerMismatch ||
+      directionMismatch ||
       existing.type !== params.type ||
       existing.amount !== params.amount ||
       (params.feature !== undefined && existing.feature !== params.feature)

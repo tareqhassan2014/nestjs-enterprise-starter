@@ -39,11 +39,11 @@ You should get a Terminus readiness payload (Postgres + Redis healthy). Compose 
 | Authorization | Deny-by-default guards, roles and assignments in the database over a code-declared permission catalogue |
 | Abuse resistance | Per-address auth rate limits on Redis, plus self-healing per-account lockout |
 | Request throttling | Redis-backed Nest burst + per-minute limits; stricter on account Nest routes |
-| Usage limits | Daily/weekly Redis counters per user (and optional org) + feature; ceilings from plan matrices |
+| Usage limits | Daily/weekly Redis counters per member **and** bound org + feature; each enforced against its own plan's ceiling |
 | Plans & subscriptions | Lite / Pro / Enterprise catalogue, monthly/yearly intervals, entitlement gate, seeded limit matrices, org-owned subscriptions |
 | Credits & Stripe top-up | User **or** organization wallet + immutable ledger, `@CostsCredits` gate, Checkout Sessions for credit packs |
 | Organizations | Create/list orgs, membership with `owner`/`admin`/`member` roles, `X-Organization-Id` binding resolves a `BillingSubject` |
-| Job queues | BullMQ (`email`, `webhooks.outbound`, `usage.rollups`) with retries/backoff and a bounded-drain graceful shutdown |
+| Job queues | BullMQ (`email`, `webhooks.outbound`, `usage.rollups`, `credits.compensations`) with retries/backoff and a bounded-drain graceful shutdown |
 | File storage | `ObjectStorage` port — local-disk adapter for dev, S3 adapter for production (boot fails on an incomplete config) |
 | Feature flags | Code-declared catalogue, DB overrides (user → org → global) over env → code defaults |
 | Request idempotency | `Idempotency-Key` header + `@Idempotent()`, replay-safe on critical POSTs (org create, checkout, admin credit adjust) |
@@ -307,6 +307,19 @@ One session model means one expiry rule and one revocation path. Revoking kills 
 
 Redis is a cache here and never a source of truth. If it is unavailable, session reads fall through to Postgres and requests keep working — degraded in latency, not in correctness.
 
+### The two postures during a Redis outage
+
+`RedisSecondaryStorage` serves both session caching and the credential rate limiter, and the two must behave in **opposite** ways when Redis is unreachable:
+
+| Operation | Posture | Why |
+| --- | --- | --- |
+| `get` / `set` / `delete` (sessions) | **Fail open** — error becomes a cache miss | Postgres is authoritative behind them, so a miss falls through and authenticated traffic keeps serving |
+| `increment` (limiter counters) | **Fail closed** — error propagates | Nothing is authoritative behind a counter. A missing counter reads as an unused window, so failing open would leave the entire credential surface unmetered during exactly the incident when someone is most likely probing it |
+
+So during a Redis outage: **`/api/auth/*` credential requests are refused with `503`, while already-authenticated requests to `/api/v1/*` keep working.** That is deliberate — it converts a silent degradation into a visible one on the surface that cannot afford to be unmetered. The asymmetry inside a single adapter is load-bearing; collapsing it into one consistent posture reintroduces either an unmetered login surface or a global sign-out.
+
+`increment` also puts the limiter on Better Auth's **atomic** counter path. Without it the library falls back to a non-atomic check-then-write it describes itself as "best-effort", so the configured ceiling would be advisory under concurrency. `createAuth` refuses to boot if the method is missing.
+
 ## MCP for agents (Cursor / Claude / ChatGPT)
 
 Nest hosts a **Streamable HTTP** MCP server at `/mcp` (configurable via `MCP_PATH`, default `/mcp`). It sits outside `/api/v1` and outside the success envelope — same boundary class as `/health` and `/metrics`.
@@ -408,7 +421,11 @@ Adding a permission:
 pnpm db:seed
 ```
 
-Effective permission sets are cached in Redis and invalidated by **advancing a version counter**, not by deleting keys: one role's mapping can affect thousands of users, and there is no key to enumerate for "everyone holding this role". Call `PermissionResolver.invalidate()` after mutating roles, mappings, or assignments.
+Effective permission sets are cached in Redis and invalidated by **advancing a version counter**, not by deleting keys: one role's mapping can affect thousands of users, and there is no key to enumerate for "everyone holding this role".
+
+**Anything that mutates roles, mappings, or assignments must advance the marker.** In the application, call `PermissionResolver.invalidate()`. From a script or one-off tool — anything with no Nest container — call `advancePermissionVersion(redis)` from `src/modules/authorization/permission-cache-version.ts`. `pnpm db:seed` already does this, and warns rather than fails if Redis is unreachable (a fresh database with no Redis running is normal; there is no cache to invalidate).
+
+If a mutation is applied *without* advancing the marker — editing `role_permissions` directly in the database, for instance — a running instance keeps serving the old grants until its cached entries expire. **The worst case is `PERMISSION_CACHE_TTL_SECONDS` (300 s).** That is the documented staleness bound; it is not a per-request cache, so the window is real.
 
 ### The guard chain
 
@@ -467,7 +484,7 @@ Pay-as-you-go credits sit **after** usage limits in the guard chain.
 | --- | --- |
 | Cost catalogue | `src/modules/credits/credit-costs.ts` (`CREDIT_COSTS`) |
 | Ledger + wallet | `CreditService` — `grant` / `spend` / `refund` / `adjust`, each with an idempotency key, keyed by `BillingSubject` |
-| Gate | `@CostsCredits('demo.paid')` — pre-handler spend; compensating refund if the handler throws |
+| Gate | `@CostsCredits('demo.paid')` — pre-handler spend; compensating refund if the handler throws, retried on `credits.compensations` if that refund itself fails |
 | Balance API | `GET /api/v1/billing/credits` (optional `…/ledger`) |
 | Demo | `POST /api/v1/billing/demo/paid` |
 | Checkout | `POST /api/v1/billing/checkout` with a configured pack slug — requires `Idempotency-Key` |
@@ -475,9 +492,24 @@ Pay-as-you-go credits sit **after** usage limits in the guard chain.
 
 **Idempotency:** ledger keys are unique. Guard spends use `spend:{requestId}:{feature}`; Stripe grants use `stripe:checkout:{sessionId}` so webhook retries never double-credit. Pack credit amounts come from **server config**, not from client-supplied metadata alone.
 
+### Required Stripe event subscriptions
+
+Subscribe the webhook endpoint to **both** of these. Credits are granted only when a session's `payment_status` is `paid` or `no_payment_required` — completion alone is not payment:
+
+| Event | Why it is required |
+| --- | --- |
+| `checkout.session.completed` | Grants immediately for card payments, which settle at completion |
+| `checkout.session.async_payment_succeeded` | **Grants for delayed-notification methods** (bank debits, some wallets), which complete a session as `unpaid` and settle later |
+
+**Missing the second subscription means those customers pay and are never credited.** The code path is correct and simply never runs — nothing in the application can detect the missing subscription, so it is worth checking in the Stripe dashboard rather than assuming. Both events derive the same `stripe:checkout:{sessionId}` key, so a session that is already paid at completion is credited once even when both arrive.
+
+A completed-but-unpaid session is acknowledged with `200` and logged at `warn` (`Checkout session has not settled`) — that is a legitimate state, not a delivery failure, and the log is what distinguishes it from an event that never arrived.
+
+**Organization top-up is not supported.** Credits support org-owned wallets and `@CostsCredits` spends from them, but Checkout takes the calling user and grants to *their* wallet — so a member of an org-primary organization spends org credits and can only top up their personal balance. Fund an org wallet through the admin adjust route (`admin:credits:adjust`) until this is built out.
+
 **Stripe config** is optional as a group (`STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`, `STRIPE_CREDIT_PACKS`). Absent → ledger and `@CostsCredits` still work; Checkout returns `503 SERVICE_UNAVAILABLE`. Prefer a restricted key (`rk_`) in real deployments. Packs are `slug:credits:priceId` comma-separated. API version follows the installed Stripe Node SDK (`2026-07-29.dahlia` for stripe@22).
 
-`CREDITS_LOW_BALANCE_THRESHOLD` emits a `credits.low_balance` event after a spend that crosses it. `LowBalanceEmailListener` bridges that event to the `email` queue — behind the `email.low_balance` feature flag or `EMAIL_LOW_BALANCE_ENABLED` — and resolves the recipient from the subject (the user themselves, or the organization's oldest `owner`).
+`CREDITS_LOW_BALANCE_THRESHOLD` emits a `credits.low_balance` event after **any debit** that crosses it — a metered spend or an operator's negative adjust, since either strands the customer. `LowBalanceEmailListener` bridges that event to the `email` queue — behind the `email.low_balance` feature flag or `EMAIL_LOW_BALANCE_ENABLED` — and resolves the recipient from the subject (the user themselves, or the organization's oldest `owner`).
 
 **Not included:** Connect, Tax, Customer Portal, Stripe PaymentIntent refunds as product refunds, or driving subscription `past_due` / cancel from invoices.
 
@@ -520,9 +552,17 @@ Three layers, because they solve different problems.
 
 **Per-address rate limits on `/api/auth/*`** (Better Auth’s Redis limiter), tighter on sign-in, sign-up, reset, and 2FA verification. Counters live in Redis, so limits hold across instances. Boot fails if the credential paths are not configured strictly than the general auth surface, so the guarantee survives edited values.
 
-**Nest burst + per-minute throttling on application routes** (`@nestjs/throttler` on the shared Redis client). Named windows (`burst`, `minute`) apply globally per tracker: authenticated callers key by `user:{id}`, anonymous by IP. First-party account / session / 2FA controllers under `/api/v1` use a stricter policy; `/health/*` skips throttling. This limiter does **not** wrap `/api/auth/*` — that surface stays on Better Auth’s rules. Exhaustion returns enveloped `429` with `RATE_LIMITED` and `Retry-After`. Redis failures fail closed as `503 SERVICE_UNAVAILABLE`.
+**Nest burst + per-minute throttling on application routes** (`@nestjs/throttler` on the shared Redis client). Named windows (`burst`, `minute`) apply per **policy** per tracker: authenticated callers key by `user:{id}`, anonymous by IP, and keys carry a `default` / `strict` segment. First-party account / session / 2FA controllers under `/api/v1` use the stricter policy; `/health/*` skips throttling. This limiter does **not** wrap `/api/auth/*` — that surface stays on Better Auth’s rules. Exhaustion returns enveloped `429` with `RATE_LIMITED` and `Retry-After`. Redis failures fail closed as `503 SERVICE_UNAVAILABLE`.
 
-**Daily / weekly usage counters** for declared features (`UsageLimitsService`, optional `@UsageLimit`). Keys are per user (and optionally per org when multi-tenancy exists). Periods are UTC calendar day and ISO week. Ceilings come from the caller's effective **plan matrix** when seeded, otherwise from `USAGE_LIMIT_*` env defaults. Exhaustion returns `429` with `USAGE_LIMIT_EXCEEDED` (distinct from burst throttling) plus `Retry-After` until the period resets. Prefer `consume()` after successful billable work when only successes should burn quota.
+The policy segment matters: counters are **not** shared between the two ceilings. Ordinary `/api/v1` traffic cannot spend the stricter account allowance, and a block written when a caller exceeds the strict ceiling denies only strict-policy routes — not the whole API. Counters remain per policy rather than per route, so exhausting the default burst on one path still protects the other default paths.
+
+**MCP tool invocations** get their own Redis burst + per-minute counters (`MCP_THROTTLE_*`). A genuine exceedance denies with `RATE_LIMITED`; an unreachable counter store denies with `SERVICE_UNAVAILABLE`. Both fail closed — the distinction is so an agent knows whether waiting will help, and so the invocation trail records an outage (`outcome: error`) rather than apparent abuse (`outcome: denied`).
+
+**Daily / weekly usage counters** for declared features (`UsageLimitsService`, optional `@UsageLimit`). Periods are UTC calendar day and ISO week. Exhaustion returns `429` with `USAGE_LIMIT_EXCEEDED` (distinct from burst throttling) plus `Retry-After` until the period resets. Prefer `consume()` after successful billable work when only successes should burn quota.
+
+A usage subject has two dimensions — the acting member, plus an organization when the request is bound to one and that org bills itself (resolved through `BillingSubjectResolver`, same as credits). **Both counters are enforced, each against its own plan's ceiling**: the member's against theirs, the organization's against the organization's. So an org plan can set a genuinely org-wide ceiling, and one member still cannot exhaust it alone. Ceilings come from the effective **plan matrix** when seeded, otherwise from `USAGE_LIMIT_*` env defaults.
+
+A rejected consume leaves every counter as it was — a denied request never spends quota. That is compensation rather than a transaction: increments already applied in the call are rolled back on refusal, and a crash between the two leaves a counter high for the remainder of the period, bounded by its TTL.
 
 **Per-account lockout**, because an address-keyed limiter does nothing about a thousand hosts each making four guesses at one password. After a threshold, retry delay grows exponentially to a cap, and the window **expires on its own** — no sticky lock, and no administrative unlock step. That is intentional: a permanent lock would hand an attacker the ability to deny a real user their own account.
 
@@ -554,6 +594,7 @@ Auth mail (verification, reset) stays on the **synchronous** `MailerService` pat
 | `email` | Non-critical mail (e.g. low-balance notices) | `EmailProcessor` → `MailerService.send` |
 | `webhooks.outbound` | Outbound webhook delivery | `WebhookProcessor` — `fetch` with a timeout, throws on non-2xx to trigger a BullMQ retry |
 | `usage.rollups` | Periodic usage counter housekeeping | `UsageRollupProcessor` — read-only `SCAN` over `usage:*`, does not affect live limit checks |
+| `credits.compensations` | Retry a compensating credit refund whose inline attempt failed | `CreditCompensationProcessor` — replays through `CreditService.refund` with the *same* idempotency key, so a refund that actually landed replays as a no-op |
 
 BullMQ gets its **own** `ioredis` connection (`maxRetriesPerRequest: null`), separate from the application's general Redis client, which is deliberately configured to fail fast instead of blocking on retries. Queue name prefix, retry attempts, and backoff come from the `queues` config namespace (`BULLMQ_*` env vars).
 

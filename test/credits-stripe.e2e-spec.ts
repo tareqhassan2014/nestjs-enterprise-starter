@@ -329,6 +329,131 @@ describe('Credits and Stripe top-up (integration)', () => {
       expect(await credits.getBalance(user.userId)).toBe(100);
     });
 
+    /**
+     * Settlement, which the original guard could not enforce.
+     *
+     * `payment_status !== 'paid' && status !== 'complete'` was unreachable for
+     * these events — `status` is `'complete'` by definition, so the `&&`
+     * short-circuited and every completed session was credited regardless of
+     * payment. The suite's only webhook case passed `payment_status: 'paid'`, so
+     * the hole was invisible.
+     */
+    describe('settlement', () => {
+      /** Builds a signed-event stub for one session payload. */
+      function stubEvent(
+        eventId: string,
+        type: string,
+        session: Record<string, unknown>,
+      ) {
+        mockConstructEvent.mockImplementation(() => ({
+          id: eventId,
+          type,
+          data: { object: session },
+        }));
+      }
+
+      const post = () =>
+        request(server())
+          .post('/api/v1/billing/webhook')
+          .set('stripe-signature', 't=1,v1=test')
+          .set('Content-Type', 'application/json')
+          .send(Buffer.from(JSON.stringify({ ping: true })));
+
+      const sessionFor = (
+        user: TestUser,
+        paymentStatus: string,
+        id: string,
+      ) => ({
+        id,
+        payment_status: paymentStatus,
+        status: 'complete',
+        metadata: { userId: user.userId, creditPack: 'starter' },
+        client_reference_id: user.userId,
+      });
+
+      it('grants nothing for a completed but unpaid session', async () => {
+        const user = await freshUser('credits-unpaid');
+        stubEvent(
+          `evt_unpaid_${user.userId}`,
+          'checkout.session.completed',
+          sessionFor(user, 'unpaid', `cs_unpaid_${user.userId}`),
+        );
+
+        const response = await post();
+
+        // Acknowledged — this is a legitimate state, not a delivery failure.
+        expect(response.status).toBe(200);
+        expect(await credits.getBalance(user.userId)).toBe(0);
+      });
+
+      it('grants when the session required no payment', async () => {
+        const user = await freshUser('credits-nopay');
+        stubEvent(
+          `evt_nopay_${user.userId}`,
+          'checkout.session.completed',
+          sessionFor(user, 'no_payment_required', `cs_nopay_${user.userId}`),
+        );
+
+        expect((await post()).status).toBe(200);
+
+        // A fully discounted pack settles nothing and must still deliver.
+        expect(await credits.getBalance(user.userId)).toBe(100);
+      });
+
+      it('grants when a delayed payment later succeeds', async () => {
+        const user = await freshUser('credits-async');
+        const sessionId = `cs_async_${user.userId}`;
+
+        // Completes unpaid: nothing granted yet.
+        stubEvent(
+          `evt_c_${user.userId}`,
+          'checkout.session.completed',
+          sessionFor(user, 'unpaid', sessionId),
+        );
+        expect((await post()).status).toBe(200);
+        expect(await credits.getBalance(user.userId)).toBe(0);
+
+        /**
+         * Settles later. Without this event type being routed, the customer would
+         * have paid and never been credited — which is why the settlement fix and
+         * this handler had to land together.
+         */
+        stubEvent(
+          `evt_a_${user.userId}`,
+          'checkout.session.async_payment_succeeded',
+          sessionFor(user, 'paid', sessionId),
+        );
+        expect((await post()).status).toBe(200);
+        expect(await credits.getBalance(user.userId)).toBe(100);
+      });
+
+      it('credits once in total when completion and settlement both arrive paid', async () => {
+        const user = await freshUser('credits-both');
+        const sessionId = `cs_both_${user.userId}`;
+
+        stubEvent(
+          `evt_bc_${user.userId}`,
+          'checkout.session.completed',
+          sessionFor(user, 'paid', sessionId),
+        );
+        expect((await post()).status).toBe(200);
+
+        stubEvent(
+          `evt_ba_${user.userId}`,
+          'checkout.session.async_payment_succeeded',
+          sessionFor(user, 'paid', sessionId),
+        );
+        expect((await post()).status).toBe(200);
+
+        /**
+         * Two distinct events, two processed-event rows, one grant — the canonical
+         * `stripe:checkout:{id}` key is what converges them, not the processed-event
+         * table.
+         */
+        expect(await credits.getBalance(user.userId)).toBe(100);
+      });
+    });
+
     it('rejects invalid webhook signatures', async () => {
       mockConstructEvent.mockImplementation(() => {
         throw new Error('bad sig');
